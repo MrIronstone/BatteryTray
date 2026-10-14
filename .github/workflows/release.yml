@@ -1,0 +1,33 @@
+name: Release
+
+# Push a tag like v0.0.3 (annotated; its message becomes the release notes)
+# to build BatteryTray.exe on Windows and publish it as a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish
+        run: dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Make sure the annotated tag object (not just the commit) is available for --notes-from-tag
+          git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          gh release create "$GITHUB_REF_NAME" out/BatteryTray.exe \
+            --verify-tag --title "$GITHUB_REF_NAME" --notes-from-tag
