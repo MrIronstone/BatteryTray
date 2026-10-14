@@ -140,7 +140,7 @@ index edc99b6..00b962e 100644
          }
  #endif
 +    } else if (get_transport() == TRANSPORT_USB && usb_power_connected()) {
-+        /* BatteryTray: Cable modunda da modülden voltaj oku (sadece okuma) */
++        /* BatteryTray: keep reading the cell voltage from the module in Cable mode too (read-only) */
 +        monitor_voltage = true;
 +    }
  
@@ -173,9 +173,9 @@ index 0560847..364af44 100644
 +#    include "transport.h"
 +#    include "wireless.h"
 +
-+/* BatteryTray: pil durumunu 2.4 GHz dongle uzerinden birkac saniyede bir
-+ * kendiliginden gonder (dongle bilgisayardan klavyeye gelen istekleri
-+ * iletmedigi icin "push" modeli). Sadece 2.4 GHz modunda calisir. */
++/* BatteryTray: push the battery state over the 2.4 GHz dongle every few
++ * seconds ("push" model, because the dongle doesn't forward requests from
++ * the PC to the keyboard). Only active in 2.4 GHz mode. */
 +#    ifndef BATTERY_PUSH_INTERVAL
 +#        define BATTERY_PUSH_INTERVAL 5000
 +#    endif

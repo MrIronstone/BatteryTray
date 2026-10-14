@@ -16,8 +16,8 @@ the devices directly over USB HID and Bluetooth LE.
   - *Nearby:* Bluetooth LE devices around you; left, right and case battery for AirPods/Beats
 - **Low battery alerts:** Windows notification below 10 % and 5 % (once per device).
 - **Start with Windows:** toggle from the right-click menu, no admin rights required.
-- **English / Turkish UI:** follows the Windows display language by default; change it from
-  right-click → **Language**.
+- **English / Turkish UI:** English by default; switch to Turkish (or follow the Windows
+  display language) from right-click → **Language**.
 
 ## Supported devices
 

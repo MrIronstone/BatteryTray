@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- 10.0.19041: Bluetooth LE (AirPods) için Windows API'leri -->
+    <!-- 10.0.19041: Windows APIs for Bluetooth LE (AirPods) -->
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>

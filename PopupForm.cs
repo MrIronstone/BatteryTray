@@ -5,22 +5,22 @@ using System.Runtime.InteropServices;
 
 namespace BatteryTray;
 
-/// Tepsi simgesine tıklanınca açılan, Windows 11 tarzı koyu küçük panel.
-/// Her cihaz için: simge, ad, durum notu, yüzde ve küçük pil çubuğu.
+/// Small dark Windows 11-style panel that opens when the tray icon is clicked.
+/// For each device: icon, name, status note, percentage and a small battery bar.
 internal sealed class PopupForm : Form
 {
     private IReadOnlyList<DeviceStatus> _items = Array.Empty<DeviceStatus>();
     private IReadOnlyList<DeviceStatus> _nearby = Array.Empty<DeviceStatus>();
-    private int _tab;   // 0 = Cihazlarım, 1 = Yakındakiler
+    private int _tab;   // 0 = My devices, 1 = Nearby
 
-    /// "Yakındakiler" sekmesinin verisi (açıkken 2 sn'de bir yenilenir)
+    /// Data for the "Nearby" tab (refreshed every 2 s while open)
     public Func<IReadOnlyList<DeviceStatus>>? NearbyProvider { get; set; }
     private readonly System.Windows.Forms.Timer _nearTimer = new() { Interval = 2000 };
     public DateTime LastHidden { get; private set; }
 
     private const int W = 320, Header = 52, RowH = 62, PartsRowH = 118, Footer = 14;
 
-    // Birden fazla pili olan cihazlar (AirPods) daha yüksek bir satırda sütunlarla çizilir
+    // Devices with more than one battery (AirPods) get a taller row with columns
     private static int RowHeight(DeviceStatus d) => d.Parts is { Count: > 0 } ? PartsRowH : RowH;
 
     private static readonly Color Bg = Color.FromArgb(32, 32, 32);
@@ -59,7 +59,7 @@ internal sealed class PopupForm : Form
         {
             var cp = base.CreateParams;
             cp.ClassStyle |= 0x00020000;   // CS_DROPSHADOW
-            cp.ExStyle |= 0x00000080;      // WS_EX_TOOLWINDOW (Alt+Tab'da görünmesin)
+            cp.ExStyle |= 0x00000080;      // WS_EX_TOOLWINDOW (hidden from Alt+Tab)
             return cp;
         }
     }
@@ -67,13 +67,13 @@ internal sealed class PopupForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        // Windows 11: yuvarlak köşe + koyu tema
+        // Windows 11: rounded corners + dark theme
         try
         {
             int round = 2; DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int));
             int dark = 1; DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
         }
-        catch { /* Windows 10'da bu öznitelikler yok, sorun değil */ }
+        catch { /* these attributes don't exist on Windows 10, that's fine */ }
     }
 
     public void SetItems(IReadOnlyList<DeviceStatus> items)
@@ -90,7 +90,7 @@ internal sealed class PopupForm : Form
 
     private IReadOnlyList<DeviceStatus> Rows => _tab == 0 ? _items : _nearby;
 
-    /// Satır sayısına göre yüksekliği ayarla; panel açıksa alt kenarı sabit tut
+    /// Resize to fit the rows; keep the bottom edge fixed while the panel is open
     private void Relayout()
     {
         int h = Header + (Rows.Count == 0 ? RowH : Rows.Sum(RowHeight)) + Footer;
@@ -112,14 +112,14 @@ internal sealed class PopupForm : Form
         if (_tab == 1) RefreshNearby(); else Relayout();
     }
 
-    /// Paneli tıklanan noktanın (tepsi simgesinin) tam üstüne ortalar.
+    /// Centers the panel right above the clicked point (the tray icon).
     public void ShowAt(Point anchor)
     {
         var wa = Screen.FromPoint(anchor).WorkingArea;
         int x = anchor.X - Width / 2;
         x = Math.Clamp(x, wa.Left + 8, wa.Right - Width - 8);
-        int y = wa.Bottom - Height - 12;   // görev çubuğu altta varsayımı
-        if (anchor.Y < wa.Top)              // görev çubuğu üstteyse
+        int y = wa.Bottom - Height - 12;   // assumes the taskbar is at the bottom
+        if (anchor.Y < wa.Top)              // taskbar at the top
             y = wa.Top + 12;
         Location = new Point(x, y);
         Show();
@@ -147,7 +147,7 @@ internal sealed class PopupForm : Form
         using var t1 = new SolidBrush(Text1);
         using var t2 = new SolidBrush(Text2);
 
-        // Sekmeler
+        // Tabs
         using (var tabFont = new Font("Segoe UI Semibold", 10f))
         {
             string[] tabs = { L.T("Cihazlarım", "My devices"), L.T("Yakındakiler", "Nearby") };
@@ -177,7 +177,7 @@ internal sealed class PopupForm : Form
             using (var rp = Rounded(row, 8))
                 g.FillPath(rb, rp);
 
-            // Cihaz simgesi (Segoe Fluent / MDL2 glifleri)
+            // Device icon (Segoe Fluent / MDL2 glyphs)
             string glyph = it.Kind switch
             {
                 DeviceKind.Headset or DeviceKind.Earbuds => "",
@@ -185,24 +185,24 @@ internal sealed class PopupForm : Form
                 DeviceKind.Mouse => "",
                 _ => "",
             };
-            var iconRect = new Rectangle(row.X + 10, row.Y, 32, RowH - 8);   // simge her zaman üst kısımda
+            var iconRect = new Rectangle(row.X + 10, row.Y, 32, RowH - 8);   // icon always in the top part
             TextRenderer.DrawText(g, glyph, iconFont, iconRect, Text1,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
-            // Ad ve not
+            // Name and note
             int tx = row.X + 50;
             int textW = row.Width - 50 - (it.Parts is { Count: > 0 } ? 12 : 90);
             TextRenderer.DrawText(g, it.Name, nameFont, new Rectangle(tx, row.Y + 8, textW, 20), Text1,
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-            string note = it.Note;   // biçim Notes.Make ile tek yerden belirleniyor
+            string note = it.Note;   // the format is defined in one place by Notes.Make
             TextRenderer.DrawText(g, note, noteFont, new Rectangle(tx, row.Y + 30, textW, 18), Text2,
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
-            // Sağ taraf: yüzde + çubuk
+            // Right side: percentage + bar
             int rx = row.Right - 80;
             if (it.Parts is { Count: > 0 } parts)
             {
-                // Sol / Sağ / Kutu: alt kısımda yan yana eşit sütunlar
+                // Left / Right / Case: equal columns side by side in the lower part
                 int pad = 12, gap = 8;
                 int colW = (row.Width - 2 * pad - gap * (parts.Count - 1)) / parts.Count;
                 int cy = row.Y + 54;
@@ -258,7 +258,7 @@ internal sealed class PopupForm : Form
             }
             else if (it.Wired)
             {
-                // Kablolu mod: yüzde yerine yatay, yeşil priz simgesi
+                // Cable mode: a horizontal green plug instead of a percentage
                 DrawPlug(g, row.Right - 14, row.Y + row.Height / 2, Color.FromArgb(60, 200, 90));
             }
             else
@@ -271,7 +271,7 @@ internal sealed class PopupForm : Form
         }
     }
 
-    /// Yatay fiş: solda kablo, ortada gövde, sağda iki uç. (right, cy) = sağ kenar ve dikey orta.
+    /// Horizontal plug: cable on the left, body in the middle, two prongs on the right. (right, cy) = right edge and vertical center.
     private static void DrawPlug(Graphics g, int right, int cy, Color c)
     {
         using var b = new SolidBrush(c);
@@ -281,12 +281,12 @@ internal sealed class PopupForm : Form
         int bodyRight = right - prongLen;
         var body = new Rectangle(bodyRight - bodyW, cy - bodyH / 2, bodyW, bodyH);
 
-        // Uçlar
+        // Prongs
         g.FillRectangle(b, bodyRight, cy - 6, prongLen, 3);
         g.FillRectangle(b, bodyRight, cy + 3, prongLen, 3);
-        // Gövde (sol tarafı yuvarlak)
+        // Body (rounded on the left)
         using (var gp = Rounded(body, 5)) g.FillPath(b, gp);
-        // Kablo
+        // Cable
         g.DrawLine(pen, body.X - cableLen, cy, body.X, cy);
     }
 

@@ -10,14 +10,14 @@ using HidSharp;
 namespace BatteryTray;
 
 // ---------------------------------------------------------------------------
-// HS80 MAX protokolü (topluluk tarafından tersine mühendislikle çözüldü):
-//  - VID 0x1B1C (Corsair), kablosuz dongle PID 0x0A97
-//  - Kontrol arayüzü: interface 4 (yolda "mi_04"), vendor usage page 0xFF42
-//  - İstek  (64 byte): [0]=0x02 (report id) [1]=hedef [2]=0x02 (GET) [3]=özellik
-//      hedef 0x08 = dongle/kök cihaz, 0x09 = kulaklık (child)
-//      özellik 0x0F = pil (LE16, 0..1000 -> /10 = %)
-//      özellik 0x10 = şarj durumu (0 deşarj, 1 şarj oluyor, 2 dolu)
-//  - Cevap: [1]=hedef [2]=komut [3]=hata kodu (0 = OK) [4..]=değer
+// HS80 MAX protocol (reverse-engineered by the community):
+//  - VID 0x1B1C (Corsair), wireless dongle PID 0x0A97
+//  - Control interface: interface 4 ("mi_04" in the path), vendor usage page 0xFF42
+//  - Request (64 bytes): [0]=0x02 (report id) [1]=target [2]=0x02 (GET) [3]=property
+//      target 0x08 = dongle/root device, 0x09 = headset (child)
+//      property 0x0F = battery (LE16, 0..1000 -> /10 = %)
+//      property 0x10 = charge state (0 discharging, 1 charging, 2 full)
+//  - Response: [1]=target [2]=command [3]=error code (0 = OK) [4..]=value
 // ---------------------------------------------------------------------------
 internal static class Hs80Protocol
 {
@@ -35,13 +35,13 @@ internal sealed record BatteryInfo(double Percent, int ChargeState);
 
 internal static class Log
 {
-    // Log, exe ile aynı klasörde tutulur (batterytray_log.txt)
+    // The log is kept next to the exe (batterytray_log.txt)
     public static readonly string File_ = System.IO.Path.Combine(AppContext.BaseDirectory, "batterytray_log.txt");
     public static void W(string msg)
     {
         try
         {
-            // Log 2 MB'ı geçerse sıfırla
+            // Reset the log once it exceeds 2 MB
             var fi = new FileInfo(File_);
             if (fi.Exists && fi.Length > 2_000_000) File.WriteAllText(File_, "");
             File.AppendAllText(File_, $"{DateTime.Now:HH:mm:ss} {msg}{Environment.NewLine}");
@@ -58,14 +58,14 @@ internal sealed class Hs80Device : IDisposable
     private int _outLen = 64;
     private byte _route = Hs80Protocol.RouteHeadset;
     private byte _reportId = Hs80Protocol.ReportId;
-    private bool _discovering;   // paket logu sadece cihaz aranırken yazılır
+    private bool _discovering;   // packets are only logged while searching for the device
 
     public string? Path { get; private set; }
-    public string? ProductName { get; private set; }   // cihazın USB'de bildirdiği ad
-    public bool Found { get; private set; }            // bu bilgisayarda desteklenen kulaklık var mı
+    public string? ProductName { get; private set; }   // name the device reports over USB
+    public bool Found { get; private set; }            // is a supported headset present on this PC
 
-    /// Corsair'in vendor (0xFF42) kontrol arayüzünü bulur. PID'e bakmıyoruz,
-    /// böylece hem dongle (0x0A97) hem de kabloyla bağlı kulaklık denenebilir.
+    /// Finds Corsair's vendor (0xFF42) control interface. The PID is not checked,
+    /// so both the dongle (0x0A97) and a headset connected by cable can be tried.
     public static IEnumerable<HidDevice> FindCandidates()
     {
         foreach (var d in DeviceList.Local.GetHidDevices(Hs80Protocol.CorsairVid))
@@ -83,7 +83,7 @@ internal sealed class Hs80Device : IDisposable
                 foreach (var usage in item.Usages.GetAllValues())
                     if ((usage >> 16) == Hs80Protocol.VendorUsagePage) return true;
         }
-        catch { /* bazı arayüzler descriptor vermez */ }
+        catch { /* some interfaces don't expose a descriptor */ }
         return false;
     }
 
@@ -98,13 +98,13 @@ internal sealed class Hs80Device : IDisposable
     private bool EnsureOpenCore()
     {
 
-        // Yazılabilir (out > 0) arayüzleri al; bilinen çalışan dongle (0x0A97)
-        // önce, kulaklığın kendi USB arayüzü (0x0A96) sonra denensin.
+        // Take writable interfaces (out > 0); try the known-good dongle (0x0A97)
+        // first and the headset's own USB interface (0x0A96) second.
         var candidates = FindCandidates()
             .Where(d => d.GetMaxOutputReportLength() > 0)
             .OrderBy(d => d.ProductID == 0x0A97 ? 0 : 1)
             .ToList();
-        Log.W($"aday arayüz sayısı: {candidates.Count}");
+        Log.W($"candidate interfaces: {candidates.Count}");
         Found = candidates.Count > 0;
         if (!Found) LastError = L.T("Bulunamadı", "Not found");
 
@@ -113,26 +113,26 @@ internal sealed class Hs80Device : IDisposable
           try
           {
             Log.W($"deneniyor PID=0x{dev.ProductID:X4} out={dev.GetMaxOutputReportLength()} in={dev.GetMaxInputReportLength()} {dev.DevicePath}");
-            if (!dev.TryOpen(out var s)) { LastError = "arayüz açılamadı"; Log.W("  açılamadı"); continue; }
+            if (!dev.TryOpen(out var s)) { LastError = L.T("arayüz açılamadı", "could not open interface"); Log.W("  could not open"); continue; }
             s.ReadTimeout = 400;
             s.WriteTimeout = 400;
             _stream = s;
             _outLen = Math.Max(dev.GetMaxOutputReportLength(), 64);
             Path = dev.DevicePath;
-            // Alıcı kendini "... Receiver" diye tanıtır; panelde kulaklığı temsil ettiği için "Headset" yaz
+            // The receiver calls itself "... Receiver"; it stands for the headset in the panel, so say "Headset"
             ProductName = HidNames.Of(dev, L.T("Kulaklık", "Headset")).Replace("Receiver", "Headset");
 
-            // Cihazın tanımladığı output report ID'lerini oku, 0x02 yoksa ilkini kullan.
+            // Read the output report IDs the device declares; use the first one if 0x02 is missing.
             try
             {
                 var ids = dev.GetReportDescriptor().OutputReports.Select(r => r.ReportID).ToList();
                 Log.W("  output report id'leri: " + string.Join(",", ids.Select(i => "0x" + i.ToString("X2"))));
                 _reportId = ids.Count == 0 || ids.Contains(Hs80Protocol.ReportId) ? Hs80Protocol.ReportId : ids[0];
             }
-            catch (Exception ex) { Log.W("  descriptor okunamadı: " + ex.Message); }
+            catch (Exception ex) { Log.W("  could not read descriptor: " + ex.Message); }
 
-            // Önce kulaklık (0x09) hedefini dene; kabloyla doğrudan bağlıysa
-            // kulaklığın kendisi kök (0x08) olarak cevap verebilir.
+            // Try the headset target (0x09) first; when connected directly by cable
+            // the headset itself may answer as the root (0x08).
             foreach (var route in new[] { Hs80Protocol.RouteHeadset, Hs80Protocol.RouteRoot })
             {
                 _route = route;
@@ -160,14 +160,14 @@ internal sealed class Hs80Device : IDisposable
             var raw = ReadBatteryRaw();
             if (raw is null && _route == Hs80Protocol.RouteHeadset)
             {
-                // Kablosuzda kulaklık bir süre sessiz kalınca uyandırmak gerekebiliyor
+                // Over wireless the headset may need a wake-up after staying idle for a while
                 Wake();
                 raw = ReadBatteryRaw();
             }
             if (raw is null)
             {
-                // Kablo takıldı/çıkarıldıysa doğru arayüz değişmiş olabilir:
-                // bağlantıyı kapat, bir sonraki turda baştan arasın.
+                // If the cable was plugged/unplugged the right interface may have changed:
+                // close the connection and search again on the next round.
                 LastError = L.T("cevap alınamadı, yeniden aranacak", "no response, will retry");
                 Close();
                 return null;
@@ -179,14 +179,14 @@ internal sealed class Hs80Device : IDisposable
         catch (Exception ex)
         {
             LastError = ex.GetType().Name + ": " + ex.Message;
-            Log.W("okuma hatası: " + ex);
-            Close(); // cihaz çıkarıldıysa bir sonraki turda yeniden ara
+            Log.W("read error: " + ex);
+            Close(); // if the device was removed, search again next round
             return null;
         }
     }
 
-    /// HeadsetControl'deki el sıkışma: alıcıya firmware sorgusu (0x13) ve "heartbeat" (0x12),
-    /// ardından kulaklığa heartbeat. Kulaklığı yazılım moduna almadan konuşmayı açar.
+    /// Handshake from HeadsetControl: firmware query (0x13) and "heartbeat" (0x12) to the receiver,
+    /// then a heartbeat to the headset. Opens communication without switching the headset to software mode.
     private void Wake()
     {
         if (_stream == null) return;
@@ -206,7 +206,7 @@ internal sealed class Hs80Device : IDisposable
         }
         try
         {
-            if (_discovering) Log.W("    wake: alıcı 0x13/0x12, kulaklık 0x12");
+            if (_discovering) Log.W("    wake: receiver 0x13/0x12, headset 0x12");
             Send(Hs80Protocol.RouteRoot, 0x13);
             Send(Hs80Protocol.RouteRoot, 0x12);
             Drain();
@@ -214,7 +214,7 @@ internal sealed class Hs80Device : IDisposable
             Thread.Sleep(100);
             Drain();
         }
-        catch (Exception ex) { Log.W("    wake hatası: " + ex.Message); }
+        catch (Exception ex) { Log.W("    wake error: " + ex.Message); }
     }
 
     private int? ReadBatteryRaw()
@@ -225,7 +225,7 @@ internal sealed class Hs80Device : IDisposable
         return raw is > 0 and <= 1000 ? raw : null;
     }
 
-    /// GET isteği gönderir, eşleşen cevabın değer kısmını döner.
+    /// Sends a GET request and returns the value part of the matching response.
     private byte[]? GetProperty(byte prop)
     {
         if (_stream == null) return null;
@@ -238,23 +238,23 @@ internal sealed class Hs80Device : IDisposable
         if (_discovering) Log.W($"    > {Log.Hex(req, 8)}");
         _stream.Write(req);
 
-        // Arada kulaklığın kendiliğinden gönderdiği olay paketleri gelebilir,
-        // bu yüzden birkaç rapor okuyup bizimkini arıyoruz.
+        // The headset may send unsolicited event packets in between,
+        // so read a few reports and look for ours.
         for (int i = 0; i < 8; i++)
         {
             byte[] resp;
             try { resp = _stream.Read(); }
             catch (Exception ex) when (ex is TimeoutException || (ex is IOException && ex.Message.Contains("after some time")))
-            { if (_discovering) Log.W("    < (zaman aşımı)"); return null; }
+            { if (_discovering) Log.W("    < (timeout)"); return null; }
             if (_discovering) Log.W($"    < {Log.Hex(resp)}");
 
-            // Report ID bazen başta olur bazen olmaz: iki ofseti de dene.
+            // The report ID is sometimes at the start and sometimes not: try both offsets.
             foreach (int off in new[] { 0, -1 })
             {
                 int r = 1 + off;
                 if (r < 0 || resp.Length < r + 5) continue;
-                // Kablolu modda kulaklık hedef baytını 0x00 olarak döndürüyor,
-                // bu yüzden hedefi değil sadece komut + hata kodunu kontrol ediyoruz.
+                // In wired mode the headset returns 0x00 as the target byte,
+                // so only the command + error code are checked, not the target.
                 if (resp[r + 1] == Hs80Protocol.CmdGet && resp[r + 2] == 0x00)
                     return resp[(r + 3)..];
             }
@@ -276,7 +276,7 @@ internal sealed class TrayApp : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly Hs80Device _device = new();
     private readonly PopupForm _popup = new();
-    // Başlangıçta hiçbiri gösterilmez; cihaz bulununca adıyla birlikte panele eklenir
+    // Nothing is shown at start; each device is added to the panel with its name once found
     private DeviceStatus _headset = new(DeviceKind.Headset, L.T("Kulaklık", "Headset"), null, false, "...", Present: false);
     private DeviceStatus _mouse = new(DeviceKind.Mouse, L.T("Fare", "Mouse"), null, false, "...", Present: false);
     private DeviceStatus _keyboard = new(DeviceKind.Keyboard, L.T("Klavye", "Keyboard"), null, false, "...", Present: false);
@@ -285,7 +285,7 @@ internal sealed class TrayApp : ApplicationContext
     private Icon? _currentIcon;
     private bool _busy;
 
-    // Pil simgesi durumu
+    // Battery icon state
     private readonly System.Windows.Forms.Timer _blink;
     private int _pct;
     private int _state = -1;
@@ -297,9 +297,9 @@ internal sealed class TrayApp : ApplicationContext
         SetIcon("?", Color.Gray);
         _tray.MouseClick += OnTrayClick;
         _popup.NearbyProvider = AirPods.Nearby;
-        AirPods.Start();   // yakındaki cihazlar sekmesi için tarama hep açık
+        AirPods.Start();   // scanning always runs for the Nearby tab
 
-        // Pil simgesi ile büyük sayı arasında dönen zamanlayıcı
+        // Timer that alternates between the battery icon and the charging device icon
         _blink = new System.Windows.Forms.Timer { Interval = 1500 };
         _blink.Tick += (_, _) => { _blinkOn = !_blinkOn; RenderBattery(); };
 
@@ -309,7 +309,7 @@ internal sealed class TrayApp : ApplicationContext
         _ = RefreshAsync();
     }
 
-    /// Sağ tık menüsü. Dil değişince baştan kurulur.
+    /// Right-click menu. Rebuilt from scratch when the language changes.
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
@@ -317,15 +317,15 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(L.T("Yenile", "Refresh"), null, async (_, _) => await RefreshAsync());
         menu.Items.Add(L.T("Tanılama", "Diagnostics"), null, async (_, _) =>
         {
-            // Bağlı tüm HID cihazlarını ve desteklenen markaların cevaplarını log'a yazar, sonra log'u açar.
-            // Yeni bir cihaz eklemek ya da bir sorunu çözmek için bu log yeterli.
+            // Writes every connected HID device and the responses of supported brands to the log, then opens it.
+            // This log is all that's needed to add a new device or troubleshoot a problem.
             await Task.Run(RunDiagnostics);
             OpenLog();
         });
         menu.Items.Add(L.T("Logu aç", "Open log"), null, (_, _) => OpenLog());
 
-        // Dil seçimi
-        // Her dilde "Language" yazar; yanlış dilde kalan biri de kolayca bulabilsin
+        // Language selection
+        // Always reads "Language" so someone stuck in the wrong language can still find it
         var lang = new ToolStripMenuItem("Language");
         foreach (var (value, text) in new[] { (L.Lang.Auto, L.T("Otomatik (Windows dili)", "Automatic (Windows language)")),
                                               (L.Lang.Tr, "Türkçe"), (L.Lang.En, "English") })
@@ -335,7 +335,7 @@ internal sealed class TrayApp : ApplicationContext
             lang.DropDownItems.Add(item);
         }
 
-        // Windows açılışında otomatik başlatma (Çıkış'ın hemen üstünde)
+        // Start with Windows (right above Exit)
         var autoStart = new ToolStripMenuItem(L.T("Windows ile başlat", "Start with Windows")) { Checked = AutoStart.IsEnabled };
         autoStart.Click += (_, _) =>
         {
@@ -346,7 +346,7 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(lang);
         menu.Items.Add(autoStart);
 
-        // Çıkış her zaman en altta
+        // Exit is always last
         menu.Items.Add(L.T("Çıkış", "Exit"), null, (_, _) => ExitThread());
         return menu;
     }
@@ -360,14 +360,14 @@ internal sealed class TrayApp : ApplicationContext
     private void ChangeLanguage(L.Lang lang)
     {
         L.Set(lang);
-        // Eski menü şu an tıklanan menü olduğu için burada dispose edilmiyor
+        // The old menu is the one being clicked right now, so it isn't disposed here
         _tray.ContextMenuStrip = BuildMenu();
         _popup.Invalidate();
-        _ = RefreshAsync();   // cihaz durum yazıları yeni dille yeniden üretilsin
+        _ = RefreshAsync();   // regenerate device status texts in the new language
     }
 
-    // Düşük pil uyarısı: her cihaz için %10 ve %5 eşiğinde birer kez Windows bildirimi.
-    // Cihaz şarja takılınca ya da %15'in üstüne çıkınca uyarılar sıfırlanır.
+    // Low battery alert: one Windows notification per device at 10 % and at 5 %.
+    // Alerts reset once the device is put on charge or goes above 15 %.
     private readonly Dictionary<DeviceKind, int> _warnedAt = new();
 
     private void CheckLowBattery()
@@ -386,17 +386,17 @@ internal sealed class TrayApp : ApplicationContext
             if (_warnedAt.TryGetValue(d.Kind, out int prev) && prev <= level) continue;
 
             _warnedAt[d.Kind] = level;
-            Log.W($"düşük pil uyarısı: {d.Name} %{p}");
+            Log.W($"low battery alert: {d.Name} {p}%");
             _tray.ShowBalloonTip(10_000,
                 level == 5 ? L.T("Pil kritik seviyede", "Battery critical") : L.T("Pil azaldı", "Battery low"),
-                // AirPods değerleri 10'luk adımlarla gelir: yaklaşık olduğunu belirt
+                // AirPods values come in 10 % steps: mark them as approximate
                 L.T($"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}%{p} kaldı. Şarja takmayı unutma.",
                     $"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}{p}% left. Don't forget to charge it."),
                 level == 5 ? ToolTipIcon.Error : ToolTipIcon.Warning);
         }
     }
 
-    private DeviceStatus? _airpods;   // sadece yayını görüldüyse listede
+    private DeviceStatus? _airpods;   // only listed once its advertisement has been seen
 
     private IReadOnlyList<DeviceStatus> Items =>
         new[] { _headset, _mouse, _keyboard, _asusKeyboard, _airpods }
@@ -408,7 +408,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         if (e.Button != MouseButtons.Left) return;
         if (_popup.Visible) { _popup.Hide(); return; }
-        // Simgeye tıklayınca panel önce odağı kaybedip kapanır; hemen tekrar açılmasın
+        // Clicking the icon first makes the panel lose focus and close; don't reopen it right away
         if ((DateTime.Now - _popup.LastHidden).TotalMilliseconds < 300) return;
 
         _popup.SetItems(Items);
@@ -422,29 +422,29 @@ internal sealed class TrayApp : ApplicationContext
         _busy = true;
         try
         {
-            // Fare ve klavye arka planda okunur, hata olsa bile kulaklığı etkilemez
+            // Mouse and keyboards are read in the background; errors there never affect the headset
             var others = Task.Run(() =>
             {
                 DeviceStatus m, k, ak;
-                try { m = RogMouse.Read(); } catch (Exception ex) { Log.W("fare: " + ex); m = _mouse with { Percent = null, Note = "Okunamadı" }; }
-                try { k = Keychron.Read(); } catch (Exception ex) { Log.W("klavye: " + ex); k = _keyboard with { Percent = null, Note = "Okunamadı" }; }
-                try { ak = AsusKeyboard.Read(); } catch (Exception ex) { Log.W("ASUS klavye: " + ex); ak = _asusKeyboard with { Percent = null, Note = "Okunamadı" }; }
+                try { m = RogMouse.Read(); } catch (Exception ex) { Log.W("mouse: " + ex); m = _mouse with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
+                try { k = Keychron.Read(); } catch (Exception ex) { Log.W("keyboard: " + ex); k = _keyboard with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
+                try { ak = AsusKeyboard.Read(); } catch (Exception ex) { Log.W("ASUS keyboard: " + ex); ak = _asusKeyboard with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
                 return (m, k, ak);
             });
 
             var info = await Task.Run(() => _device.Read());
             UpdateHeadsetStatus(info);
-            UpdateTrayIcon(info);   // simge kulaklık okunur okunmaz güncellensin, diğerlerini bekleme
+            UpdateTrayIcon(info);   // update the icon as soon as the headset is read, don't wait for the others
 
             (_mouse, _keyboard, _asusKeyboard) = await others;
             try { _airpods = await AirPods.ReadAsync(); } catch (Exception ex) { Log.W("airpods: " + ex.Message); }
             CheckLowBattery();
             if (_popup.Visible) _popup.SetItems(Items);
-            UpdateTrayIcon(info);   // şarj olan cihaz bilgisi değişmiş olabilir
+            UpdateTrayIcon(info);   // the set of charging devices may have changed
         }
         catch (Exception ex)
         {
-            Log.W("refresh hatası: " + ex);
+            Log.W("refresh error: " + ex);
             _blink.Stop();
             SetIcon("!", Color.OrangeRed);
             var tip = L.T("Hata: ", "Error: ") + ex.Message;
@@ -453,7 +453,7 @@ internal sealed class TrayApp : ApplicationContext
         finally
         {
             _busy = false;
-            // Kulaklık kapalıyken 5 sn'de bir dene ki açılınca hemen görünsün; bağlıyken 30 sn yeterli
+            // While the headset is off, retry every 5 s so it shows up right after it's turned on; 30 s is enough once connected
             _timer.Interval = _headset.Percent is null ? 5_000 : 30_000;
         }
     }
@@ -479,7 +479,7 @@ internal sealed class TrayApp : ApplicationContext
             _ => L.T("durum bilinmiyor", "unknown state")
         };
 
-        // Sadece bir cihaz şarj oluyorsa iki görsel arasında dön
+        // Alternate between the two images only while some device is charging
         if (Items.Any(i => i.Charging))
         {
             if (!_blink.Enabled) { _blinkOn = false; _blink.Start(); }
@@ -491,7 +491,7 @@ internal sealed class TrayApp : ApplicationContext
         }
         RenderBattery();
         var t = $"{_headset.Name}: {L.Pct(info.Percent, "0.#")} ({state})";
-        _tray.Text = t.Length > 120 ? t[..120] : t;   // en fazla 127 karakter
+        _tray.Text = t.Length > 120 ? t[..120] : t;   // at most 127 characters
     }
 
     private void UpdateHeadsetStatus(BatteryInfo? info)
@@ -508,17 +508,17 @@ internal sealed class TrayApp : ApplicationContext
                                    Percent = (int)Math.Round(info.Percent), Charging = info.ChargeState == 1, Note = note };
     }
 
-    // Tepsi simgesi:
-    //  - Hiçbir cihaz şarj olmuyorsa: sabit, sadece kulaklığın yüzdesi (tüm simgeyi kaplar)
-    //  - Şarj olan cihaz varsa: kulaklık yüzdesi <-> şarj olan cihazın yeşil simgesi
-    //    (birden fazla cihaz şarj oluyorsa: yan yana üç yeşil dikey pil)
-    // Kulaklık %10'un altındaysa (şarjda değilken) kırmızı.
-    // Her şey tam piksele oturacak şekilde, kenar yumuşatmasız çizilir.
+    // Tray icon:
+    //  - No device charging: static, just the headset percentage (fills the whole icon)
+    //  - A device is charging: headset percentage <-> green icon of the charging device
+    //    (more than one device charging: three green vertical batteries side by side)
+    // Red when the headset is below 10 % (and not charging).
+    // Everything is drawn pixel-aligned, without anti-aliasing.
     private static readonly Color Green = Color.FromArgb(60, 200, 90);
 
     private void RenderBattery()
     {
-        // Tepsinin gerçek simge boyutunda çiz (100% DPI = 16px, 150% = 24px ...)
+        // Draw at the tray's real icon size (100% DPI = 16px, 150% = 24px ...)
         int S = Math.Max(SystemInformation.SmallIconSize.Width, 16);
         bool low = _pct < 10 && _state != 1;
         Color c = low ? Color.FromArgb(255, 72, 72) : Color.White;
@@ -541,7 +541,7 @@ internal sealed class TrayApp : ApplicationContext
         ApplyBitmap(bmp);
     }
 
-    // 3x5 piksel rakamlar: kulaklığın içine sığacak kadar küçük ama 2x ölçekte çok net
+    // 3x5 pixel digits: small enough to fit, very crisp at 2x scale
     private static readonly string[][] Glyphs3x5 =
     {
         new[] { "###", "#.#", "#.#", "#.#", "###" }, // 0
@@ -560,8 +560,8 @@ internal sealed class TrayApp : ApplicationContext
     {
         int n = text.Length;
         int unitsW = n * 3 + (n - 1);
-        // Yatay ölçek genişliğe göre, dikey ölçek yüksekliğe göre (en fazla 2 katı):
-        // rakamlar biraz uzun/dar olur ama simgeyi çok daha iyi doldurur
+        // Horizontal scale from the width, vertical scale from the height (at most 2x):
+        // digits get a bit tall/narrow but fill the icon much better
         int sx = Math.Max(1, area.Width / unitsW);
         int sy = Math.Max(1, Math.Min(area.Height / 5, sx * 2));
         int tw = unitsW * sx, th = 5 * sy;
@@ -577,7 +577,7 @@ internal sealed class TrayApp : ApplicationContext
         }
     }
 
-    // Kafa bandı + iki kulaklık kabı (cups) ortak çizimi; iç alanı döndürür
+    // Shared drawing of headband + two ear cups; returns the inner area
     private static Rectangle DrawHeadsetShape(Graphics g, int S, Color c)
     {
         using var b = new SolidBrush(c);
@@ -586,22 +586,22 @@ internal sealed class TrayApp : ApplicationContext
         int cupBottom = S - 1;
         int band = Math.Max(2, S / 12);
 
-        // Kulaklık kapları
+        // Ear cups
         g.FillRectangle(b, 0, cupTop, cupW, cupBottom - cupTop + 1);
         g.FillRectangle(b, S - cupW, cupTop, cupW, cupBottom - cupTop + 1);
 
-        // Kafa bandı: yarım elips, kapların ortasından çıkar
+        // Headband: half ellipse rising from the middle of the cups
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var pen = new Pen(c, band))
             g.DrawArc(pen, cupW / 2f, band / 2f, S - cupW, 2f * (cupTop - band / 2f) , 180, 180);
         g.SmoothingMode = SmoothingMode.None;
 
-        // Rakamlar için: kapların arası, bandın hemen altından simgenin dibine kadar
+        // Area for digits: between the cups, from just below the band to the bottom of the icon
         int top = band + Math.Max(1, S / 8);
         return new Rectangle(cupW + 1, top, S - 2 * cupW - 2, S - top);
     }
 
-    // Sadece yüzde: rakamlar simgenin tamamını kaplar, tam piksel ölçekle ve ortalı
+    // Percentage only: digits fill the whole icon, pixel-scaled and centered
     private void DrawHeadsetWithNumber(Graphics g, int S, Color c)
     {
         using var b = new SolidBrush(c);
@@ -609,7 +609,7 @@ internal sealed class TrayApp : ApplicationContext
         int n = text.Length;
         int unitsW = n * 3 + (n - 1);
 
-        int sx = Math.Max(1, Math.Min(S / unitsW, S / 7));   // tek basamak da iki basamak kalınlığında
+        int sx = Math.Max(1, Math.Min(S / unitsW, S / 7));   // a single digit is as thick as two
         int sy = Math.Max(1, Math.Min(S / 5, sx * 2));
         int tw = unitsW * sx, th = 5 * sy;
         int x = (S - tw) / 2, y = (S - th) / 2;
@@ -627,12 +627,12 @@ internal sealed class TrayApp : ApplicationContext
     private static void DrawDeviceGlyph(Graphics g, int S, DeviceKind kind, Color c)
     {
         using var b = new SolidBrush(c);
-        int t = Math.Max(1, S / 12);   // çizgi kalınlığı
+        int t = Math.Max(1, S / 12);   // line thickness
         switch (kind)
         {
             case DeviceKind.Earbuds:
             {
-                // İki AirPods: yuvarlak baş + aşağı inen sap
+                // Two AirPods: round head + stem going down
                 int head = Math.Max(3, S * 5 / 16), stemW = Math.Max(1, S / 8);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 foreach (int cx in new[] { S / 4, S * 3 / 4 })
@@ -650,7 +650,7 @@ internal sealed class TrayApp : ApplicationContext
 
             case DeviceKind.Mouse:
             {
-                // Dikey fare gövdesi, tuş ayrımı ve tekerlek
+                // Vertical mouse body, button split and wheel
                 int w = (int)(S * 0.56), h = S - 2;
                 var body = new Rectangle((S - w) / 2, 1, w, h);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -660,14 +660,14 @@ internal sealed class TrayApp : ApplicationContext
                 g.SmoothingMode = SmoothingMode.None;
                 int midX = S / 2;
                 int split = body.Y + (int)(h * 0.42);
-                g.FillRectangle(b, body.X + t, split, body.Width - 2 * t, t);       // yatay ayrım
-                g.FillRectangle(b, midX - t / 2, body.Y + t, t, split - body.Y - t); // dikey ayrım
+                g.FillRectangle(b, body.X + t, split, body.Width - 2 * t, t);       // horizontal split
+                g.FillRectangle(b, midX - t / 2, body.Y + t, t, split - body.Y - t); // vertical split
                 break;
             }
 
             case DeviceKind.Keyboard:
             {
-                // Yatay klavye: çerçeve + tuş noktaları + boşluk tuşu
+                // Horizontal keyboard: frame + key dots + space bar
                 int h = (int)(S * 0.62);
                 var body = new Rectangle(0, (S - h) / 2, S, h);
                 g.FillRectangle(b, body.X, body.Y, body.Width, t);
@@ -703,8 +703,8 @@ internal sealed class TrayApp : ApplicationContext
         for (int i = 0; i < 3; i++)
         {
             int x = x0 + i * (w + gap);
-            g.FillRectangle(b, x + (w - nubW) / 2, top - nubH, nubW, nubH); // uç
-            g.FillRectangle(b, x, top, w, h);                               // gövde
+            g.FillRectangle(b, x + (w - nubW) / 2, top - nubH, nubW, nubH); // terminal
+            g.FillRectangle(b, x, top, w, h);                               // body
         }
     }
 
@@ -720,7 +720,7 @@ internal sealed class TrayApp : ApplicationContext
         return p;
     }
 
-    // Okunaklı rakamlar için Bahnschrift (normal genişlik) (Windows 10/11'de var), yoksa Segoe UI
+    // Bahnschrift (normal width) for readable digits (ships with Windows 10/11), otherwise Segoe UI
     private static FontFamily? _family;
     private static FontFamily PickFont()
     {
@@ -774,10 +774,10 @@ internal sealed class TrayApp : ApplicationContext
         ApplyBitmap(bmp);
     }
 
-    /// Tanılama: tüm HID cihazlarının dökümü + markaya özel denemeler (şimdilik ASUS).
+    /// Diagnostics: dump of all HID devices + brand-specific probes (currently ASUS).
     private static void RunDiagnostics()
     {
-        Log.W("========== Tanılama başladı ==========");
+        Log.W("========== Diagnostics started ==========");
         Log.W($"BatteryTray {typeof(TrayApp).Assembly.GetName().Version}, Windows {Environment.OSVersion.Version}");
         try
         {
@@ -787,7 +787,7 @@ internal sealed class TrayApp : ApplicationContext
                 string mfr = "?", name = "?";
                 try { mfr = first.GetManufacturer(); } catch { }
                 try { name = first.GetProductName(); } catch { }
-                Log.W($"[HID] VID=0x{g.Key.VendorID:X4} PID=0x{g.Key.ProductID:X4} \"{mfr}\" \"{name}\" ({g.Count()} arayüz)");
+                Log.W($"[HID] VID=0x{g.Key.VendorID:X4} PID=0x{g.Key.ProductID:X4} \"{mfr}\" \"{name}\" ({g.Count()} interfaces)");
                 foreach (var d in g)
                 {
                     string usages = "?";
@@ -802,10 +802,10 @@ internal sealed class TrayApp : ApplicationContext
                 }
             }
         }
-        catch (Exception ex) { Log.W("[HID] döküm hatası: " + ex.Message); }
+        catch (Exception ex) { Log.W("[HID] dump error: " + ex.Message); }
 
-        try { AsusKeyboard.Diagnose(); } catch (Exception ex) { Log.W("[ASUS tanı] " + ex); }
-        Log.W("========== Tanılama bitti ==========");
+        try { AsusKeyboard.Diagnose(); } catch (Exception ex) { Log.W("[ASUS diag] " + ex); }
+        Log.W("========== Diagnostics finished ==========");
     }
 
     protected override void Dispose(bool disposing)
@@ -828,12 +828,12 @@ internal sealed class TrayApp : ApplicationContext
     private static extern bool DestroyIcon(IntPtr handle);
 }
 
-/// Windows açılışında başlatma: HKCU\...\Run anahtarı (yönetici izni gerekmez)
+/// Start with Windows: HKCU\...\Run key (no admin rights needed)
 internal static class AutoStart
 {
     private const string Key = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string Name = "BatteryTray";
-    private const string OldName = "HS80Tray";   // eski sürümün kaydı
+    private const string OldName = "HS80Tray";   // entry left by the old version
 
     public static bool IsEnabled
     {
@@ -850,7 +850,7 @@ internal static class AutoStart
                       ?? Microsoft.Win32.Registry.CurrentUser.CreateSubKey(Key);
         if (enable) k.SetValue(Name, $"\"{Environment.ProcessPath}\"");
         else k.DeleteValue(Name, throwOnMissingValue: false);
-        k.DeleteValue(OldName, throwOnMissingValue: false);   // HS80Tray adıyla kalan eski kaydı temizle
+        k.DeleteValue(OldName, throwOnMissingValue: false);   // remove the old HS80Tray entry
     }
 }
 

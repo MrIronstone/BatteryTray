@@ -15,8 +15,8 @@ cihazlarla doğrudan USB HID ve Bluetooth LE üzerinden konuşur.
   - *Yakındakiler:* çevredeki Bluetooth LE cihazları; AirPods/Beats için sol, sağ ve kutu pili
 - **Düşük pil bildirimi:** %10 ve %5'in altında Windows bildirimi (cihaz başına bir kez).
 - **Windows ile başlat:** sağ tık menüsünden açılıp kapatılır, yönetici izni gerekmez.
-- **Türkçe / İngilizce arayüz:** varsayılan olarak Windows'un diline uyar; sağ tık →
-  **Language** menüsünden değiştirilebilir.
+- **Türkçe / İngilizce arayüz:** varsayılan dil İngilizce; sağ tık → **Language** menüsünden
+  Türkçe seçilebilir ya da Windows'un diline uyması sağlanabilir.
 
 ## Desteklenen cihazlar
 

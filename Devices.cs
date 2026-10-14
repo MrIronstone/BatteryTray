@@ -6,9 +6,9 @@ namespace BatteryTray;
 
 internal enum DeviceKind { Headset, Mouse, Keyboard, Earbuds, Other }
 
-/// Popup'ta bir satır: cihaz türü, adı, pil yüzdesi (yoksa null), şarj durumu ve kısa not.
-/// Paneldeki alt satır her cihazda aynı biçimde: "[Şarj oluyor · | Dolu · ]Bağlantı"
-/// Bağlantı her zaman "Kablosuz" ya da "USB kablo"; "Dolu" sadece kablodayken anlamlı.
+/// One row in the popup: device type, name, battery percentage (null if unknown), charge state and a short note.
+/// The second line in the panel has the same shape for every device: "[Charging · | Full · ]Connection"
+/// Connection is always "Wireless" or "USB cable"; "Full" only makes sense while on the cable.
 internal static class Notes
 {
     public static string Wireless => L.T("Kablosuz", "Wireless");
@@ -20,15 +20,15 @@ internal static class Notes
         : conn;
 }
 
-/// Present = false: cihaz bu bilgisayarda yok, panelde gösterilmez.
-/// Parts: birden fazla pili olan cihazlar için (AirPods: sol, sağ, kutu). Panelde ayrı sütunlar olarak çizilir.
+/// Present = false: the device isn't on this PC and isn't shown in the panel.
+/// Parts: for devices with more than one battery (AirPods: left, right, case). Drawn as separate columns.
 internal sealed record DeviceStatus(DeviceKind Kind, string Name, int? Percent, bool Charging, string Note,
     bool Wired = false, bool Present = true, IReadOnlyList<BatteryPart>? Parts = null);
 
-/// Approx: değer yaklaşık (AirPods yayınları 10'ar puanlık adımlarla gelir), panelde "~" ile gösterilir.
+/// Approx: the value is approximate (AirPods advertise in 10 % steps), shown with "~" in the panel.
 internal sealed record BatteryPart(string Label, int? Percent, bool Charging, bool Approx = false);
 
-/// Cihaz adları elle yazılmaz: USB'de cihazın kendini tanıttığı ad (product string) kullanılır.
+/// Device names are never hard-coded: the name the device reports over USB (product string) is used.
 internal static class HidNames
 {
     public static string Of(HidDevice d, string fallback)
@@ -43,11 +43,11 @@ internal static class HidNames
 }
 
 // ---------------------------------------------------------------------------
-// ASUS ROG fareler (VID 0x0B05) - G-Helper / BatteryTool'un çözdüğü protokol:
-//  - Arayüz: genelde "mi_00"
-//  - İstek (65 byte): [0]=report id (0) [1]=0x12 [2]=0x07
-//  - Cevap: [1]=0x12 [2]=0x07 [5]=pil % (bazı eski modellerde x25) [10]=şarj (0 değilse şarjda)
-//  - Cevap "FF AA" ise dongle cevap veriyor ama fare uykuda/kapalı
+// ASUS ROG mice (VID 0x0B05) - protocol figured out by G-Helper / BatteryTool:
+//  - Interface: usually "mi_00"
+//  - Request (65 bytes): [0]=report id (0) [1]=0x12 [2]=0x07
+//  - Response: [1]=0x12 [2]=0x07 [5]=battery % (x25 on some older models) [10]=charging (non-zero = charging)
+//  - Response "FF AA" means the dongle answers but the mouse is asleep/off
 // ---------------------------------------------------------------------------
 internal static class RogMouse
 {
@@ -108,7 +108,7 @@ internal static class RogMouse
             cfg.SetOption(OpenOption.Exclusive, false);
             using var s = dev.Open(cfg);
 
-            // Önce kuyrukta bekleyen eski paketleri boşalt
+            // First drain any stale packets from the queue
             s.ReadTimeout = 20;
             var buf = new byte[Math.Max(256, dev.GetMaxInputReportLength())];
             var drain = Stopwatch.StartNew();
@@ -158,13 +158,13 @@ internal static class RogMouse
 }
 
 // ---------------------------------------------------------------------------
-// ASUS ROG kablosuz klavyeler (VID 0x0B05) - mikgangal/battery-tray'in çözdüğü protokol
-// (ROG Strix Scope II 96 Wireless + Omni Receiver ile doğrulanmış):
-//  - Arayüz: "mi_02&col02", vendor usage page 0xFF00, report ID 0x02
-//  - İstek (64 byte): [0x02, 0x12, 0x01, 0...]
-//  - Cevap: [1]=0x12 [2]=0x01 (yankı), [6]=pil %, [9]=şarj (1 = şarj oluyor)
-// Başka ASUS cihazlarına (ör. anakart RGB kontrolcüsü) yanlışlıkla komut göndermemek için
-// sadece hem bu arayüzü hem de bir klavye arayüzü olan cihazlar sorgulanır.
+// ASUS ROG wireless keyboards (VID 0x0B05) - protocol figured out by mikgangal/battery-tray
+// (verified with ROG Strix Scope II 96 Wireless + Omni Receiver):
+//  - Interface: "mi_02&col02", vendor usage page 0xFF00, report ID 0x02
+//  - Request (64 bytes): [0x02, 0x12, 0x01, 0...]
+//  - Response: [1]=0x12 [2]=0x01 (echo), [6]=battery %, [9]=charging (1 = charging)
+// To avoid accidentally sending commands to other ASUS devices (e.g. a motherboard RGB controller),
+// only devices that have both this interface and a keyboard interface are queried.
 // ---------------------------------------------------------------------------
 internal static class AsusKeyboard
 {
@@ -179,14 +179,14 @@ internal static class AsusKeyboard
 
     private static bool _diagnosed;
 
-    /// Tanılama: bağlı TÜM ASUS HID arayüzlerini ayrıntılı loglar ve klavye arayüzü olan
-    /// cihazların vendor kanallarına sadece okuma amaçlı pil sorguları gönderip cevapları yazar.
-    /// İlk açılışta bir kez kendiliğinden, sonra menüdeki "Tanılama" ile çalışır.
+    /// Diagnostics: logs ALL connected ASUS HID interfaces in detail and sends read-only battery
+    /// queries to the vendor channels of devices that have a keyboard interface, logging the responses.
+    /// Runs once automatically at startup, then via "Diagnostics" in the menu.
     public static void Diagnose()
     {
-        Log.W("========== ASUS tanılama başladı ==========");
+        Log.W("========== ASUS diagnostics started ==========");
         var all = DeviceList.Local.GetHidDevices(0x0B05).ToList();
-        if (all.Count == 0) { Log.W("[ASUS tanı] hiç ASUS HID cihazı yok"); return; }
+        if (all.Count == 0) { Log.W("[ASUS diag] no ASUS HID devices"); return; }
 
         foreach (var d in all)
         {
@@ -201,19 +201,19 @@ internal static class AsusKeyboard
                           $" inIds=[{string.Join(",", desc.InputReports.Select(r => r.ReportID))}]" +
                           $" featIds=[{string.Join(",", desc.FeatureReports.Select(r => r.ReportID))}]";
             }
-            catch (Exception ex) { usages = "okunamadı: " + ex.Message; }
+            catch (Exception ex) { usages = "unreadable: " + ex.Message; }
 
             string mfr = "?";
             try { mfr = d.GetManufacturer(); } catch { }
-            Log.W($"[ASUS tanı] PID=0x{d.ProductID:X4} ad=\"{HidNames.Of(d, "?")}\" üretici=\"{mfr}\" " +
+            Log.W($"[ASUS diag] PID=0x{d.ProductID:X4} name=\"{HidNames.Of(d, "?")}\" manufacturer=\"{mfr}\" " +
                   $"in={d.GetMaxInputReportLength()} out={d.GetMaxOutputReportLength()} feat={d.GetMaxFeatureReportLength()}");
             Log.W($"            usages={usages}{reports}");
             Log.W($"            {d.DevicePath}");
         }
 
-        // Sadece klavye arayüzü de olan cihazların vendor (0xFFxx) arayüzlerine sorgu gönder
+        // Only query the vendor (0xFFxx) interfaces of devices that also have a keyboard interface
         var keyboardPids = all.Where(d => HasUsage(d, u => u == KeyboardUsage)).Select(d => d.ProductID).ToHashSet();
-        Log.W($"[ASUS tanı] klavye arayüzü olan PID'ler: {string.Join(",", keyboardPids.Select(p => "0x" + p.ToString("X4")))}");
+        Log.W($"[ASUS diag] PIDs with a keyboard interface: {string.Join(",", keyboardPids.Select(p => "0x" + p.ToString("X4")))}");
 
         foreach (var d in all.Where(d => keyboardPids.Contains(d.ProductID) && d.GetMaxOutputReportLength() > 0
                                         && HasUsage(d, u => (u >> 16) >= 0xFF00)))
@@ -224,15 +224,15 @@ internal static class AsusKeyboard
             if (ids.Length == 0) ids = new byte[] { 0 };
 
             foreach (byte id in ids)
-                foreach (byte sub in new byte[] { 0x01, 0x07 })   // 0x01: klavye pili, 0x07: fare pili
+                foreach (byte sub in new byte[] { 0x01, 0x07 })   // 0x01: keyboard battery, 0x07: mouse battery
                     Probe(d, id, sub);
         }
-        Log.W("========== ASUS tanılama bitti ==========");
+        Log.W("========== ASUS diagnostics finished ==========");
     }
 
     private static void Probe(HidDevice d, byte reportId, byte sub)
     {
-        string tag = $"[ASUS tanı] PID=0x{d.ProductID:X4} {ShortPath(d)} id=0x{reportId:X2} komut=12-{sub:X2}";
+        string tag = $"[ASUS diag] PID=0x{d.ProductID:X4} {ShortPath(d)} id=0x{reportId:X2} cmd=12-{sub:X2}";
         try
         {
             var cfg = new OpenConfiguration();
@@ -261,7 +261,7 @@ internal static class AsusKeyboard
 
     private static string ShortPath(HidDevice d)
     {
-        // "...&mi_02&col02#..." kısmını çıkar
+        // Extract the "...&mi_02&col02#..." part
         var p = d.DevicePath.ToLowerInvariant();
         int i = p.IndexOf("&mi_");
         if (i < 0) return "";
@@ -271,10 +271,10 @@ internal static class AsusKeyboard
 
     public static DeviceStatus Read()
     {
-        if (!_diagnosed) { _diagnosed = true; try { Diagnose(); } catch (Exception ex) { Log.W("[ASUS tanı] hata: " + ex); } }
+        if (!_diagnosed) { _diagnosed = true; try { Diagnose(); } catch (Exception ex) { Log.W("[ASUS diag] error: " + ex); } }
         var all = DeviceList.Local.GetHidDevices(0x0B05).ToList();
 
-        // Klavye arayüzü olan ASUS cihazları (PID bazında)
+        // ASUS devices that have a keyboard interface (by PID)
         var keyboardPids = all.Where(d => HasUsage(d, u => u == KeyboardUsage)).Select(d => d.ProductID).ToHashSet();
 
         var candidates = all.Where(d =>
@@ -302,7 +302,7 @@ internal static class AsusKeyboard
 
     private static DeviceStatus Query(HidDevice dev)
     {
-        // Alıcının adı ("ROG Omni Receiver") yerine varsa klavyenin kendi adını kullan
+        // Prefer the keyboard's own name over the receiver's ("ROG Omni Receiver") when available
         string name = HidNames.Of(dev, "ASUS klavye");
         try
         {
@@ -310,7 +310,7 @@ internal static class AsusKeyboard
             cfg.SetOption(OpenOption.Exclusive, false);
             using var s = dev.Open(cfg);
 
-            // Kuyruktaki eski paketleri boşalt
+            // Drain stale packets from the queue
             s.ReadTimeout = 20;
             var drain = Stopwatch.StartNew();
             for (int i = 0; i < 16 && drain.ElapsedMilliseconds < 100; i++)
@@ -339,7 +339,7 @@ internal static class AsusKeyboard
                     int pct = buf[6];
                     if (pct is <= 0 or > 100) continue;
                     bool charging = buf[9] == 1;
-                    // Alıcı (Omni Receiver / dongle) üzerindense kablosuz, klavyenin kendi USB kimliğiyse kablo
+                    // Via a receiver (Omni Receiver / dongle) it's wireless; with the keyboard's own USB ID it's the cable
                     bool viaReceiver = dev.ProductID == 0x1ACE ||
                         name.Contains("Receiver", StringComparison.OrdinalIgnoreCase) ||
                         name.Contains("Dongle", StringComparison.OrdinalIgnoreCase);
@@ -358,17 +358,17 @@ internal static class AsusKeyboard
 }
 
 // ---------------------------------------------------------------------------
-// Keychron K2 Max (VID 0x3434, 2.4 GHz alıcı PID 0xD030)
-// Stok firmware pil bilgisini 2.4 GHz'de paylaşmıyor ve alıcı bilgisayardan
-// klavyeye giden istekleri iletmiyor. Bu yüzden klavyeye yamalı bir QMK
-// firmware'i yüklüyoruz: klavye birkaç saniyede bir raw HID kanalından (0xFF60)
-// kendiliğinden şu paketi gönderiyor ("push"):
-//   [0xA4, yüzde, voltaj_lo, voltaj_hi, şarj (0 pil / 1 şarj / 2 dolu), transport]
-// Uygulama bu kanalı arka planda sürekli dinliyor.
+// Keychron K2 Max (VID 0x3434, 2.4 GHz receiver PID 0xD030)
+// Stock firmware doesn't share the battery level over 2.4 GHz and the receiver doesn't forward
+// requests from the PC to the keyboard. So the keyboard gets a patched QMK firmware
+// that pushes this packet on the raw HID channel (0xFF60) every few seconds:
+//
+//   [0xA4, percent, voltage_lo, voltage_hi, charge (0 battery / 1 charging / 2 full), transport]
+// The app listens on that channel in the background.
 // ---------------------------------------------------------------------------
 internal static class Keychron
 {
-    // Ad cihazdan gelir: kabloda klavyenin kendi adı, 2.4 GHz'de alıcının adı
+    // The name comes from the device: the keyboard's own name on cable, the receiver's name on 2.4 GHz
     private static volatile string Name = "Klavye";
     private static Thread? _listener;
     private static volatile bool _dongleFound;
@@ -383,7 +383,7 @@ internal static class Keychron
             _listener.Start();
         }
 
-        // Kablo (Cable) modu: klavye doğrudan USB cihazı olarak görünür, pili sorarak alırız
+        // Cable mode: the keyboard shows up as a USB device of its own; ask it for the battery
         var wired = ReadWired();
         if (wired is not null) return wired;
 
@@ -399,7 +399,7 @@ internal static class Keychron
         var age = DateTime.Now - v.at;
         bool charging = v.charge == 1;
         if (age.TotalSeconds > 60)
-            // Klavye uykuya geçince paket gelmez; son değeri saatiyle göster
+            // No packets arrive while the keyboard sleeps; show the last value with its time
             return new(DeviceKind.Keyboard, Name, v.pct, false, L.T("Uykuda · son ", "Asleep · last ") + $"{v.at:HH:mm}");
 
         return Build(v.pct, v.charge, Notes.Wireless);
@@ -407,10 +407,10 @@ internal static class Keychron
 
     private static bool _wiredLogged;
 
-    // Şarj olurken pil voltajı yapay olarak yüksek okunur (~4.15 V) ve yüzde %100 görünür.
-    // Bu yüzden şarj sırasında voltajdan gelen yüzdeyi değil, şarjdan önceki son
-    // güvenilir ölçümü gösteriyoruz.
-    // Son güvenilir (pildeyken) ölçüm, uygulama kapanıp açılınca kaybolmasın diye dosyada tutulur
+    // While charging, the battery voltage reads artificially high (~4.15 V) and shows as 100 %.
+    // So while charging we show the last reliable reading taken before charging,
+    // not the percentage derived from the voltage.
+    // The last reliable (on-battery) reading is kept in a file so it survives app restarts
     private static readonly string StateFile = System.IO.Path.Combine(AppContext.BaseDirectory, "keychron_last.txt");
     private static (int pct, DateTime at)? _lastOnBattery = LoadLast();
 
@@ -451,7 +451,7 @@ internal static class Keychron
         return new(DeviceKind.Keyboard, Name, pct, false, conn);
     }
 
-    /// Kablo modunda klavyenin kendi raw HID arayüzüne 0xA4 (pil) isteği gönderir.
+    /// In cable mode, sends a 0xA4 (battery) request to the keyboard's own raw HID interface.
     private static DeviceStatus? ReadWired()
     {
         var dev = DeviceList.Local.GetHidDevices(0x3434)
@@ -482,17 +482,17 @@ internal static class Keychron
                 if (!_wiredLogged)
                 {
                     _wiredLogged = true;
-                    Log.W($"[Keychron] kablo modu PID=0x{dev.ProductID:X4}: %{pct}, şarj={charge}, ham={Log.Hex(buf, 10)}");
+                    Log.W($"[Keychron] cable mode PID=0x{dev.ProductID:X4}: {pct}%, charge={charge}, raw={Log.Hex(buf, 10)}");
                 }
                 if (pct is <= 0 or > 100) return new(DeviceKind.Keyboard, Name, null, false, Notes.Cable + L.T(" · pil okunamadı", " · battery unreadable"));
-                // Kablodayken yüzde güvenilir değil (şarj voltajı): yüzde yerine priz simgesi göster
+                // On the cable the percentage isn't reliable (charging voltage): show a plug icon instead
                 return new(DeviceKind.Keyboard, Name, null, charge == 1, Notes.Cable, Wired: true);
             }
             return new(DeviceKind.Keyboard, Name, null, false, Notes.Cable + L.T(" · cevap yok (firmware?)", " · no response (firmware?)"));
         }
         catch (Exception ex)
         {
-            Log.W("[Keychron] kablo modu hatası: " + ex.Message);
+            Log.W("[Keychron] cable mode error: " + ex.Message);
             return null;
         }
     }
@@ -530,10 +530,10 @@ internal static class Keychron
                 while (true)
                 {
                     byte[] buf;
-                    try { buf = s.Read(); }   // alıcı çıkarılırsa IOException, dış döngü yeniden bağlanır
+                    try { buf = s.Read(); }   // IOException if the receiver is unplugged; the outer loop reconnects
                     catch (TimeoutException) { continue; }
                     catch (IOException ex) when (ex.Message.Contains("after some time")) { continue; }
-                    // Report ID (0) başta olabilir: 0xA4'ü ilk iki baytta ara
+                    // Report ID (0) may come first: look for 0xA4 in the first two bytes
                     int i = buf.Length > 0 && buf[0] == 0xA4 ? 0 : buf.Length > 1 && buf[1] == 0xA4 ? 1 : -1;
                     if (i < 0 || buf.Length < i + 6) continue;
 
@@ -546,13 +546,13 @@ internal static class Keychron
                     if (!firstLogged)
                     {
                         firstLogged = true;
-                        Log.W($"[Keychron] ilk pil paketi: %{pct}, {mv} mV, şarj={charge}, ham={Log.Hex(buf, 10)}");
+                        Log.W($"[Keychron] first battery packet: {pct}%, {mv} mV, charge={charge}, raw={Log.Hex(buf, 10)}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Log.W("[Keychron] dinleme hatası: " + ex.Message);
+                Log.W("[Keychron] listener error: " + ex.Message);
                 Thread.Sleep(5000);
             }
         }

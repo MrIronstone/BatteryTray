@@ -6,28 +6,28 @@ using Windows.Storage.Streams;
 namespace BatteryTray;
 
 // ---------------------------------------------------------------------------
-// AirPods pil bilgisi: Bluetooth LE yayınlarından ("proximity pairing" mesajı).
-// Apple üretici verisi (company id 0x004C), ilk bayt 0x07 ise:
-//   [3..4] model kimliği (little-endian)
-//   [5]    durum (bit 5: hangi kulaklık "birincil" -> sol/sağ yer değiştirir)
-//   [6]    üst/alt 4 bit = iki kulaklığın pili (0..10 => %0..%100, 15 = yok)
-//   [7]    üst 4 bit = şarj bayrakları (bit0/bit1 kulaklıklar, bit2 kutu), alt 4 bit = kutu pili
-// Değerler 10'ar puanlık. Kulaklıklar takılıyken ya da kutu açıkken yayın yapılır.
-// Yakındaki başka Apple cihazlarını elemek için sadece güçlü sinyaller (RSSI) alınır.
-// Ayrıca satır SADECE bu bilgisayarla eşleşmiş bir AirPods varsa gösterilir; yüzde de
-// yalnızca o AirPods şu an bilgisayara bağlıyken güncellenir.
+// AirPods battery info from Bluetooth LE advertisements (the "proximity pairing" message).
+// Apple manufacturer data (company id 0x004C), when the first byte is 0x07:
+//   [3..4] model id (little-endian)
+//   [5]    status (bit 5: which bud is "primary" -> left/right are swapped)
+//   [6]    upper/lower nibble = battery of the two buds (0..10 => 0..100 %, 15 = unknown)
+//   [7]    upper nibble = charging flags (bit0/bit1 buds, bit2 case), lower nibble = case battery
+// Values come in 10 % steps. Advertised while the buds are worn or the case is open.
+// Only strong signals (RSSI) count as "my AirPods", to filter out other Apple devices nearby.
+// The "My devices" row is only shown when AirPods are paired with this PC; values come from
+// the advertisements even while the AirPods are connected to a phone.
 // ---------------------------------------------------------------------------
 internal static class AirPods
 {
-    private const short MinRssi = -65;   // ~birkaç metre; komşunun AirPods'u karışmasın
+    private const short MinRssi = -65;   // ~a few meters, so the neighbour's AirPods don't mix in
 
     private static BluetoothLEAdvertisementWatcher? _watcher;
     private static readonly object _lock = new();
     private static (int? left, int? right, int? box, bool chL, bool chR, bool chBox, DateTime at)? _last;
 
-    // Uygulama kapanıp açılınca AirPods satırı kaybolmasın: eşleşmiş adı ve son pil değerlerini
-    // exe'nin yanında saklıyoruz. (AirPods pil yayınını sadece kutu açılınca/kulaktayken yapar,
-    // eşleşmiş cihaz sorgusu da Windows'ta ~30 sn sürüyor.)
+    // So the AirPods row doesn't disappear after an app restart, the paired name and the last
+    // battery values are stored next to the exe. (AirPods only advertise battery with the case open
+    // or while worn, and the paired-device query takes ~30 s on Windows.)
     private sealed record Saved(string? Name, int? L, int? R, int? Box, DateTime? At);
     private static readonly string StateFile = System.IO.Path.Combine(AppContext.BaseDirectory, "airpods_last.json");
 
@@ -53,18 +53,18 @@ internal static class AirPods
     {
         var s = LoadSaved();
         if (s is null) return;
-        if (s.Name != null) _paired = (s.Name, false);   // gerçek durum arka plandaki sorguyla güncellenir
+        if (s.Name != null) _paired = (s.Name, false);   // the real state is updated by the background query
         if (s.At is DateTime at && (s.L ?? s.R ?? s.Box) != null)
             _last = (s.L, s.R, s.Box, false, false, false, at);
     }
     private static readonly HashSet<string> _loggedRaw = new();
     private static string? _startError;
 
-    // Yakındaki TÜM AirPods/Beats yayınları (eşleşmemiş olanlar dahil), adrese göre
+    // ALL nearby AirPods/Beats advertisements (unpaired included), keyed by address
     private sealed record Ad(string Model, short Rssi, int? L, int? R, int? Box, bool ChL, bool ChR, bool ChBox, DateTime At);
     private static readonly Dictionary<ulong, Ad> _nearby = new();
 
-    // Diğer tüm Bluetooth LE cihazları: ad, üretici, sinyal ve (varsa) Battery Service yüzdesi
+    // Every other Bluetooth LE device: name, manufacturer, signal and (if present) Battery Service percentage
     private sealed record Ble(string? Name, string? Maker, short Rssi, int? Battery, DateTime At);
     private static readonly Dictionary<ulong, Ble> _ble = new();
 
@@ -83,7 +83,7 @@ internal static class AirPods
         string? name = string.IsNullOrWhiteSpace(adv.LocalName) ? null : adv.LocalName.Trim();
         string? maker = adv.ManufacturerData.Select(m => MakerName(m.CompanyId)).FirstOrDefault(n => n != null);
 
-        // Standart Battery Service (0x180F) hizmet verisi: [0F 18 yüzde]
+        // Standard Battery Service (0x180F) service data: [0F 18 percent]
         int? battery = null;
         foreach (var sec in adv.DataSections.Where(x => x.DataType == 0x16))
         {
@@ -95,7 +95,7 @@ internal static class AirPods
         lock (_ble)
         {
             _ble.TryGetValue(args.BluetoothAddress, out var old);
-            // Ad ve pil bazen sadece bazı paketlerde gelir: eskisini koru
+            // Name and battery sometimes come only in some packets: keep the previous ones
             _ble[args.BluetoothAddress] = new Ble(name ?? old?.Name, maker ?? old?.Maker,
                 args.RawSignalStrengthInDBm, battery ?? old?.Battery, DateTime.Now);
         }
@@ -105,7 +105,7 @@ internal static class AirPods
         rssi >= -55 ? L.T("çok yakın", "very close") : rssi >= -70 ? L.T("yakın", "near")
         : rssi >= -85 ? L.T("orta", "medium") : L.T("uzak", "far");
 
-    // Bilinen model kimlikleri (proximity pairing [3..4]). Bilinmeyenler kodla gösterilir.
+    // Known model ids (proximity pairing [3..4]). Unknown ones are shown with their code.
     private static string ModelName(string code) => code switch
     {
         "2002" => "AirPods (1. nesil)",
@@ -125,17 +125,17 @@ internal static class AirPods
         if (_watcher != null) return;
         try
         {
-            // Aktif tarama: cihazlar adlarını genelde sadece "scan response" ile gönderir
+            // Active scanning: devices usually send their name only in the "scan response"
             _watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
             _watcher.Received += OnReceived;
             _watcher.Stopped += (_, e) => Log.W($"[AirPods] tarama durdu: {e.Error}");
             _watcher.Start();
-            Log.W("[AirPods] Bluetooth LE taraması başladı");
+            Log.W("[AirPods] Bluetooth LE scan started");
         }
         catch (Exception ex)
         {
             _startError = ex.Message;
-            Log.W("[AirPods] tarama başlatılamadı: " + ex.Message);
+            Log.W("[AirPods] could not start scan: " + ex.Message);
         }
     }
 
@@ -149,15 +149,15 @@ internal static class AirPods
                 if (md.CompanyId != 0x004C) continue;
                 var d = new byte[md.Data.Length];
                 DataReader.FromBuffer(md.Data).ReadBytes(d);
-                // Sadece pil içeren uzun "proximity pairing" mesajı: 07 19 01 ...
-                // (07 11 06 ... gibi kısa mesajlar pil içermez, yanlış değer üretir)
+                // Only the long "proximity pairing" message carries battery: 07 19 01 ...
+                // (short messages like 07 11 06 ... have no battery and would give wrong values)
                 if (d.Length < 9 || d[0] != 0x07 || d[1] != 0x19 || d[2] != 0x01) continue;
 
-                // Ham veriyi, her farklı model/biçim için bir kez logla (Pro 3'ü tanımak için)
-                string key = $"{d[4]:X2}{d[3]:X2}";   // model kimliği little-endian (ör. 0E 20 -> 200E = AirPods Pro)
+                // Log the raw data once per model/format (helps identify new models)
+                string key = $"{d[4]:X2}{d[3]:X2}";   // model id is little-endian (e.g. 0E 20 -> 200E = AirPods Pro)
                 lock (_loggedRaw)
                     if (_loggedRaw.Add(key))
-                        Log.W($"[AirPods] yayın: model=0x{key} rssi={args.RawSignalStrengthInDBm} ham={BitConverter.ToString(d)}");
+                        Log.W($"[AirPods] advertisement: model=0x{key} rssi={args.RawSignalStrengthInDBm} raw={BitConverter.ToString(d)}");
 
                 bool flip = (d[5] & 0x20) == 0;
                 int a = d[6] >> 4, b = d[6] & 0x0F;
@@ -165,7 +165,7 @@ internal static class AirPods
                 int caseRaw = d[7] & 0x0F;
                 int chg = d[7] >> 4;
 
-                static int? Pct(int v) => v <= 10 ? v * 10 : null;   // 15 = bilinmiyor/takılı değil
+                static int? Pct(int v) => v <= 10 ? v * 10 : null;   // 15 = unknown / not in place
                 var left = Pct(leftRaw);
                 var right = Pct(rightRaw);
                 var box = Pct(caseRaw);
@@ -179,7 +179,7 @@ internal static class AirPods
                     _nearby[args.BluetoothAddress] = new Ad(ModelName(key), args.RawSignalStrengthInDBm,
                         left, right, box, chL, chR, chBox, DateTime.Now);
 
-                // "Benim AirPods'um" için sadece güçlü (yakın) sinyaller
+                // Only strong (close) signals count as "my AirPods"
                 if (args.RawSignalStrengthInDBm < MinRssi) continue;
                 bool changed;
                 lock (_lock)
@@ -190,10 +190,10 @@ internal static class AirPods
                 if (changed) Save();
             }
         }
-        catch (Exception ex) { Log.W("[AirPods] yayın okunamadı: " + ex.Message); }
+        catch (Exception ex) { Log.W("[AirPods] could not read advertisement: " + ex.Message); }
     }
 
-    // Eşleşmiş AirPods: adı ve bağlı olup olmadığı (30 sn'de bir yenilenir)
+    // Paired AirPods: name and whether connected (refreshed every 60 s)
     private static (string name, bool connected)? _paired;
     private static DateTime _pairedCheckedAt = DateTime.MinValue;
     private static bool _pairedLogged;
@@ -206,7 +206,7 @@ internal static class AirPods
         _pairedCheckedAt = DateTime.Now;
         try
         {
-            // Eşleşmiş Bluetooth cihazları (AssociationEndpoint) + "bağlı mı" özelliği
+            // Paired Bluetooth devices (AssociationEndpoint) + the "is connected" property
             const string IsConnected = "System.Devices.Aep.IsConnected";
             var list = await DeviceInformation.FindAllAsync(
                 "System.Devices.Aep.ProtocolId:=\"{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}\" AND System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True",
@@ -216,7 +216,7 @@ internal static class AirPods
             {
                 bool connected = di.Properties.TryGetValue(IsConnected, out var v) && v is bool b && b;
                 found = (di.Name, connected);
-                if (connected) break;   // birden fazla eşleşmiş AirPods varsa bağlı olanı tercih et
+                if (connected) break;   // with more than one paired AirPods, prefer the connected one
             }
             bool nameChanged = _paired?.name != found?.Item1;
             _paired = found;
@@ -224,18 +224,18 @@ internal static class AirPods
             if (!_pairedLogged || found is null)
             {
                 _pairedLogged = true;
-                Log.W(found is null ? "[AirPods] eşleşmiş AirPods yok"
-                                    : $"[AirPods] eşleşmiş: {found.Value.Item1}, bağlı={found.Value.Item2}");
+                Log.W(found is null ? "[AirPods] no paired AirPods"
+                                    : $"[AirPods] paired: {found.Value.Item1}, connected={found.Value.Item2}");
             }
         }
-        catch (Exception ex) { Log.W("[AirPods] eşleşmiş cihazlar okunamadı: " + ex.Message); }
+        catch (Exception ex) { Log.W("[AirPods] could not read paired devices: " + ex.Message); }
     }
 
-    /// Panel satırı. Eşleşmiş AirPods yoksa null (satır gösterilmez).
+    /// Panel row. Null when there are no paired AirPods (row not shown).
     public static async Task<DeviceStatus?> ReadAsync()
     {
-        // Eşleşmiş cihaz sorgusu Windows'ta 30 sn'ye kadar sürebiliyor: arka planda çalışsın,
-        // panel/simge onu beklemesin (ilk turda satır henüz görünmeyebilir)
+        // The paired-device query can take up to 30 s on Windows: run it in the background,
+        // the panel/icon shouldn't wait for it (the row may not appear on the very first round)
         if (_pairedTask is null || _pairedTask.IsCompleted) _pairedTask = Task.Run(RefreshPairedAsync);
         await Task.CompletedTask;
         if (_paired is null) return null;
@@ -252,7 +252,7 @@ internal static class AirPods
                 L.T("Pil için kutunun kapağını aç", "Open the case lid to read battery"));
 
         var x = v.Value;
-        // Ana yüzde: takılı kulaklıkların en düşüğü (sol/sağ farklı olabilir)
+        // Main percentage: the lower of the two buds (left/right can differ)
         int? main = (x.left, x.right) switch
         {
             (int l, int r) => Math.Min(l, r),
@@ -261,8 +261,8 @@ internal static class AirPods
             _ => x.box
         };
 
-        // AirPods telefona bağlıyken de pil yayını yapar; değerleri bilgisayara bağlı olmasa da göster.
-        // Bağlantı durumu sadece alt yazıda belirtilir.
+        // AirPods advertise battery while connected to a phone too; show values even if not connected to this PC.
+        // The connection state is only mentioned in the second line.
         string conn = connected ? Notes.Wireless : L.T("Bu bilgisayara bağlı değil", "Not connected to this PC");
         bool stale = (DateTime.Now - x.at).TotalSeconds > 90;
         var parts = Parts(x.left, x.right, x.box, !stale && x.chL, !stale && x.chR, !stale && x.chBox);
@@ -277,8 +277,8 @@ internal static class AirPods
         return new(DeviceKind.Earbuds, pairedName, main, charging, Notes.Make(Notes.Wireless, charging), Parts: parts);
     }
 
-    /// "Yakındakiler" sekmesi: son 60 sn'de görülen cihazlar, en yakından uzağa.
-    /// AirPods/Beats pil bilgisiyle; diğerleri adı (ya da üreticisi) ve mesafesiyle.
+    /// "Nearby" tab: devices seen in the last 60 s, closest first.
+    /// AirPods/Beats with battery info; others with their name (or manufacturer) and distance.
     public static IReadOnlyList<DeviceStatus> Nearby()
     {
         const int MaxRows = 8;
@@ -290,13 +290,13 @@ internal static class AirPods
             ads = _nearby.Select(kv => (kv.Key, kv.Value)).ToList();
         }
 
-        // Aynı AirPods birden fazla adresten görünebilir: iki kulaklık ayrı ayrı yayın yapar ve
-        // Apple adresi birkaç dakikada bir değiştirir. Model + pil değerleri aynıysa tek cihaz say,
-        // en güçlü sinyali tut.
+        // The same AirPods can show up under several addresses: each bud advertises separately and
+        // Apple rotates the address every few minutes. Same model + same battery values = one device;
+        // keep the strongest signal.
         var earbuds = ads
             .GroupBy(x => (x.ad.Model, x.ad.L, x.ad.R, x.ad.Box))
             .Select(g => g.OrderByDescending(x => x.ad.Rssi).First())
-            // Eşleşmiş AirPods'un kendisi zaten "Cihazlarım" sekmesinde: burada tekrar gösterme
+            // The paired AirPods already appear in "My devices": don't repeat them here
             .Where(x => !IsMine(x.ad))
             .Select(x => (rssi: x.ad.Rssi, status: EarbudStatus(x.ad)))
             .ToList();
@@ -315,7 +315,7 @@ internal static class AirPods
                     string note = Distance(b.Rssi) + (b.Name != null && b.Maker != null ? $" · {b.Maker}" : "");
                     return (b.Rssi, new DeviceStatus(DeviceKind.Other, title, b.Battery, false, note));
                 })
-                // Adres değiştiren cihazlar (rastgele adres) aynı adla birden fazla görünmesin
+                // Devices with rotating (random) addresses shouldn't appear several times under the same name
                 .GroupBy(x => x.Item2.Name)
                 .Select(g => g.OrderByDescending(x => x.Item1).First())
                 .ToList();
@@ -335,8 +335,8 @@ internal static class AirPods
         new BatteryPart(L.T("Kutu", "Case"), box, chBox, Approx: true),
     };
 
-    /// Bu yayın, "Cihazlarım"da gösterilen eşleşmiş AirPods'a mı ait?
-    /// (Yayında kalıcı kimlik yok; son 90 sn'deki değerleri aynıysa onun sayıyoruz.)
+    /// Does this advertisement belong to the paired AirPods shown in "My devices"?
+    /// (Advertisements carry no stable id; if the values match the last 90 s, we assume it does.)
     private static bool IsMine(Ad a)
     {
         if (_paired is null) return false;
@@ -355,7 +355,7 @@ internal static class AirPods
             (null, int r) => r,
             _ => a.Box
         };
-        // Alt satırda sadece kaba mesafe; piller ayrı sütunlarda
+        // Second line shows only the rough distance; batteries are in separate columns
         return new DeviceStatus(DeviceKind.Earbuds, a.Model, main, a.ChL || a.ChR, Distance(a.Rssi),
             Parts: Parts(a.L, a.R, a.Box, a.ChL, a.ChR, a.ChBox));
     }

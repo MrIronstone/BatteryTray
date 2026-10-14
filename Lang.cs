@@ -3,8 +3,8 @@ using Microsoft.Win32;
 
 namespace BatteryTray;
 
-/// Arayüz dili. "Otomatik" Windows'un görüntüleme diline bakar (Türkçe ise Türkçe, değilse İngilizce).
-/// Seçim HKCU\Software\BatteryTray\Language altında saklanır.
+/// UI language. English by default; "Automatic" follows the Windows display language (Turkish if Turkish, otherwise English).
+/// The choice is stored under HKCU\Software\BatteryTray\Language.
 internal static class L
 {
     public enum Lang { Auto, Tr, En }
@@ -16,10 +16,10 @@ internal static class L
         Setting == Lang.Tr ||
         (Setting == Lang.Auto && CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr");
 
-    /// Türkçe ve İngilizce metinden o anki dile uygun olanı döndürür.
+    /// Returns the Turkish or English text depending on the current language.
     public static string T(string tr, string en) => IsTr ? tr : en;
 
-    /// Yüzde biçimi: Türkçede "%87", İngilizcede "87%".
+    /// Percent format: "%87" in Turkish, "87%" in English.
     public static string Pct(int p) => IsTr ? $"%{p}" : $"{p}%";
     public static string Pct(double p, string fmt) => IsTr ? "%" + p.ToString(fmt) : p.ToString(fmt) + "%";
 
@@ -31,7 +31,7 @@ internal static class L
             using var k = Registry.CurrentUser.CreateSubKey(Key);
             k.SetValue("Language", lang.ToString());
         }
-        catch { /* kaydedilemezse sadece bu oturum için geçerli olur */ }
+        catch { /* if it can't be saved, it only applies to this session */ }
     }
 
     private static Lang Load()
@@ -42,6 +42,6 @@ internal static class L
             if (k?.GetValue("Language") is string s && Enum.TryParse<Lang>(s, out var l)) return l;
         }
         catch { }
-        return Lang.Auto;
+        return Lang.En;   // English by default
     }
 }

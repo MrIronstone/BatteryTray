@@ -1,4 +1,4 @@
-# Derleme çıktıları
+# Build output
 bin/
 obj/
 out/
@@ -7,15 +7,15 @@ publish/
 .vs/
 .vscode/
 
-# Uygulamanın çalışırken yazdığı dosyalar
+# Files the app writes at runtime
 batterytray_log.txt
 hs80_log.txt
 keychron_last.txt
 airpods_last.json
 
-# Firmware ikili dosyaları repoda değil, Releases sayfasında dağıtılır
+# Firmware binaries are distributed via Releases, not the repo
 *.bin
 *.hex
 
-# Release notları (repoya girmez)
+# Release notes (not part of the repo)
 release-notes.md
