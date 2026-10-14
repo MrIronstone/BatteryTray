@@ -24,6 +24,39 @@ internal static class AirPods
     private static BluetoothLEAdvertisementWatcher? _watcher;
     private static readonly object _lock = new();
     private static (int? left, int? right, int? box, bool chL, bool chR, bool chBox, DateTime at)? _last;
+
+    // Uygulama kapanıp açılınca AirPods satırı kaybolmasın: eşleşmiş adı ve son pil değerlerini
+    // exe'nin yanında saklıyoruz. (AirPods pil yayınını sadece kutu açılınca/kulaktayken yapar,
+    // eşleşmiş cihaz sorgusu da Windows'ta ~30 sn sürüyor.)
+    private sealed record Saved(string? Name, int? L, int? R, int? Box, DateTime? At);
+    private static readonly string StateFile = System.IO.Path.Combine(AppContext.BaseDirectory, "airpods_last.json");
+
+    private static Saved? LoadSaved()
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<Saved>(File.ReadAllText(StateFile)); }
+        catch { return null; }
+    }
+
+    private static void Save()
+    {
+        try
+        {
+            (int? left, int? right, int? box, bool chL, bool chR, bool chBox, DateTime at)? v;
+            lock (_lock) v = _last;
+            var s = new Saved(_paired?.name, v?.left, v?.right, v?.box, v?.at);
+            File.WriteAllText(StateFile, System.Text.Json.JsonSerializer.Serialize(s));
+        }
+        catch { }
+    }
+
+    static AirPods()
+    {
+        var s = LoadSaved();
+        if (s is null) return;
+        if (s.Name != null) _paired = (s.Name, false);   // gerçek durum arka plandaki sorguyla güncellenir
+        if (s.At is DateTime at && (s.L ?? s.R ?? s.Box) != null)
+            _last = (s.L, s.R, s.Box, false, false, false, at);
+    }
     private static readonly HashSet<string> _loggedRaw = new();
     private static string? _startError;
 
@@ -69,7 +102,8 @@ internal static class AirPods
     }
 
     private static string Distance(short rssi) =>
-        rssi >= -55 ? "çok yakın" : rssi >= -70 ? "yakın" : rssi >= -85 ? "orta" : "uzak";
+        rssi >= -55 ? L.T("çok yakın", "very close") : rssi >= -70 ? L.T("yakın", "near")
+        : rssi >= -85 ? L.T("orta", "medium") : L.T("uzak", "far");
 
     // Bilinen model kimlikleri (proximity pairing [3..4]). Bilinmeyenler kodla gösterilir.
     private static string ModelName(string code) => code switch
@@ -83,7 +117,7 @@ internal static class AirPods
         "2027" => "AirPods Pro 3",
         "200A" or "201F" => "AirPods Max",
         "2003" or "200B" or "2011" or "2010" or "2016" or "2012" or "2017" or "2006" or "2009" or "2005" => "Beats",
-        _ => $"Apple kulaklık ({code})"
+        _ => L.T("Apple kulaklık", "Apple earbuds") + $" ({code})"
     };
 
     public static void Start()
@@ -115,7 +149,9 @@ internal static class AirPods
                 if (md.CompanyId != 0x004C) continue;
                 var d = new byte[md.Data.Length];
                 DataReader.FromBuffer(md.Data).ReadBytes(d);
-                if (d.Length < 9 || d[0] != 0x07) continue;   // sadece proximity pairing mesajı
+                // Sadece pil içeren uzun "proximity pairing" mesajı: 07 19 01 ...
+                // (07 11 06 ... gibi kısa mesajlar pil içermez, yanlış değer üretir)
+                if (d.Length < 9 || d[0] != 0x07 || d[1] != 0x19 || d[2] != 0x01) continue;
 
                 // Ham veriyi, her farklı model/biçim için bir kez logla (Pro 3'ü tanımak için)
                 string key = $"{d[4]:X2}{d[3]:X2}";   // model kimliği little-endian (ör. 0E 20 -> 200E = AirPods Pro)
@@ -145,7 +181,13 @@ internal static class AirPods
 
                 // "Benim AirPods'um" için sadece güçlü (yakın) sinyaller
                 if (args.RawSignalStrengthInDBm < MinRssi) continue;
-                lock (_lock) _last = (left, right, box, chL, chR, chBox, DateTime.Now);
+                bool changed;
+                lock (_lock)
+                {
+                    changed = _last is null || _last.Value.left != left || _last.Value.right != right || _last.Value.box != box;
+                    _last = (left, right, box, chL, chR, chBox, DateTime.Now);
+                }
+                if (changed) Save();
             }
         }
         catch (Exception ex) { Log.W("[AirPods] yayın okunamadı: " + ex.Message); }
@@ -176,7 +218,9 @@ internal static class AirPods
                 found = (di.Name, connected);
                 if (connected) break;   // birden fazla eşleşmiş AirPods varsa bağlı olanı tercih et
             }
+            bool nameChanged = _paired?.name != found?.Item1;
             _paired = found;
+            if (nameChanged) Save();
             if (!_pairedLogged || found is null)
             {
                 _pairedLogged = true;
@@ -202,10 +246,10 @@ internal static class AirPods
         lock (_lock) v = _last;
 
         if (_startError is not null)
-            return new(DeviceKind.Earbuds, pairedName, null, false, "Bluetooth taranamıyor");
+            return new(DeviceKind.Earbuds, pairedName, null, false, L.T("Bluetooth taranamıyor", "Bluetooth scan unavailable"));
         if (v is null)
             return new(DeviceKind.Earbuds, pairedName, null, false,
-                connected ? "Pil bilgisi bekleniyor" : "Bağlı değil");
+                L.T("Pil için kutunun kapağını aç", "Open the case lid to read battery"));
 
         var x = v.Value;
         // Ana yüzde: takılı kulaklıkların en düşüğü (sol/sağ farklı olabilir)
@@ -217,20 +261,20 @@ internal static class AirPods
             _ => x.box
         };
 
-        var parts = new List<string>();
-        if (x.left is int l2) parts.Add($"Sol %{l2}");
-        if (x.right is int r2) parts.Add($"Sağ %{r2}");
-        if (x.box is int b2) parts.Add($"Kutu %{b2}");
-        string detail = string.Join(" · ", parts);
-
-        bool stale = !connected || (DateTime.Now - x.at).TotalSeconds > 90;
+        // AirPods telefona bağlıyken de pil yayını yapar; değerleri bilgisayara bağlı olmasa da göster.
+        // Bağlantı durumu sadece alt yazıda belirtilir.
+        string conn = connected ? Notes.Wireless : L.T("Bu bilgisayara bağlı değil", "Not connected to this PC");
+        bool stale = (DateTime.Now - x.at).TotalSeconds > 90;
+        var parts = Parts(x.left, x.right, x.box, !stale && x.chL, !stale && x.chR, !stale && x.chBox);
         if (stale)
             return new(DeviceKind.Earbuds, pairedName, main, false,
-                (connected ? "Kutuda" : "Bağlı değil") + $" · son {x.at:HH:mm}");
+                L.T("Son görülme ", "Last seen ") + $"{x.at:HH:mm}" + (connected ? "" : " · " + conn),
+                Parts: parts);
+        if (!connected)
+            return new(DeviceKind.Earbuds, pairedName, main, x.chL || x.chR, conn, Parts: parts);
 
         bool charging = x.chL || x.chR;
-        string note = (charging ? "Şarj oluyor · " : "") + detail;
-        return new(DeviceKind.Earbuds, pairedName, main, charging, note);
+        return new(DeviceKind.Earbuds, pairedName, main, charging, Notes.Make(Notes.Wireless, charging), Parts: parts);
     }
 
     /// "Yakındakiler" sekmesi: son 60 sn'de görülen cihazlar, en yakından uzağa.
@@ -246,7 +290,16 @@ internal static class AirPods
             ads = _nearby.Select(kv => (kv.Key, kv.Value)).ToList();
         }
 
-        var earbuds = ads.Select(x => (rssi: x.ad.Rssi, status: EarbudStatus(x.ad))).ToList();
+        // Aynı AirPods birden fazla adresten görünebilir: iki kulaklık ayrı ayrı yayın yapar ve
+        // Apple adresi birkaç dakikada bir değiştirir. Model + pil değerleri aynıysa tek cihaz say,
+        // en güçlü sinyali tut.
+        var earbuds = ads
+            .GroupBy(x => (x.ad.Model, x.ad.L, x.ad.R, x.ad.Box))
+            .Select(g => g.OrderByDescending(x => x.ad.Rssi).First())
+            // Eşleşmiş AirPods'un kendisi zaten "Cihazlarım" sekmesinde: burada tekrar gösterme
+            .Where(x => !IsMine(x.ad))
+            .Select(x => (rssi: x.ad.Rssi, status: EarbudStatus(x.ad)))
+            .ToList();
         var skip = ads.Select(x => x.addr).ToHashSet();
 
         List<(short rssi, DeviceStatus status)> others;
@@ -258,10 +311,14 @@ internal static class AirPods
                 .Select(kv =>
                 {
                     var b = kv.Value;
-                    string title = b.Name ?? (b.Maker != null ? $"{b.Maker} cihazı" : "İsimsiz cihaz");
+                    string title = b.Name ?? (b.Maker != null ? L.T($"{b.Maker} cihazı", $"{b.Maker} device") : L.T("İsimsiz cihaz", "Unnamed device"));
                     string note = Distance(b.Rssi) + (b.Name != null && b.Maker != null ? $" · {b.Maker}" : "");
                     return (b.Rssi, new DeviceStatus(DeviceKind.Other, title, b.Battery, false, note));
-                }).ToList();
+                })
+                // Adres değiştiren cihazlar (rastgele adres) aynı adla birden fazla görünmesin
+                .GroupBy(x => x.Item2.Name)
+                .Select(g => g.OrderByDescending(x => x.Item1).First())
+                .ToList();
         }
 
         return earbuds.Concat(others)
@@ -269,6 +326,24 @@ internal static class AirPods
             .Take(MaxRows)
             .Select(x => x.Item2)
             .ToList();
+    }
+
+    private static IReadOnlyList<BatteryPart> Parts(int? l, int? r, int? box, bool chL, bool chR, bool chBox) => new[]
+    {
+        new BatteryPart(L.T("Sol", "Left"), l, chL, Approx: true),
+        new BatteryPart(L.T("Sağ", "Right"), r, chR, Approx: true),
+        new BatteryPart(L.T("Kutu", "Case"), box, chBox, Approx: true),
+    };
+
+    /// Bu yayın, "Cihazlarım"da gösterilen eşleşmiş AirPods'a mı ait?
+    /// (Yayında kalıcı kimlik yok; son 90 sn'deki değerleri aynıysa onun sayıyoruz.)
+    private static bool IsMine(Ad a)
+    {
+        if (_paired is null) return false;
+        (int? left, int? right, int? box, bool chL, bool chR, bool chBox, DateTime at)? m;
+        lock (_lock) m = _last;
+        return m is { } v && (DateTime.Now - v.at).TotalSeconds <= 90
+               && v.left == a.L && v.right == a.R && v.box == a.Box;
     }
 
     private static DeviceStatus EarbudStatus(Ad a)
@@ -280,12 +355,9 @@ internal static class AirPods
             (null, int r) => r,
             _ => a.Box
         };
-        // Kaba mesafe tahmini (RSSI'den; duvarlar ve vücut çok etkiler)
-        var parts = new List<string> { Distance(a.Rssi) };
-        if (a.L is int l2) parts.Add($"Sol %{l2}");
-        if (a.R is int r2) parts.Add($"Sağ %{r2}");
-        if (a.Box is int b2) parts.Add($"Kutu %{b2}");
-        return new DeviceStatus(DeviceKind.Earbuds, a.Model, main, a.ChL || a.ChR, string.Join(" · ", parts));
+        // Alt satırda sadece kaba mesafe; piller ayrı sütunlarda
+        return new DeviceStatus(DeviceKind.Earbuds, a.Model, main, a.ChL || a.ChR, Distance(a.Rssi),
+            Parts: Parts(a.L, a.R, a.Box, a.ChL, a.ChR, a.ChBox));
     }
 
     public static void Stop()

@@ -1,56 +1,57 @@
-# Keychron K2 Max — 2.4 GHz pil firmware yaması
+# Keychron K2 Max — 2.4 GHz battery firmware patch
 
-Keychron'un stok firmware'i pil yüzdesini 2.4 GHz alıcı üzerinden bilgisayara iletmez.
-Bu yama, klavyenin pil durumunu **5 saniyede bir kendiliğinden** raw HID kanalından
-(usage page `0xFF60`) göndermesini sağlar. BatteryTray bu kanalı dinler.
+**English** · [Türkçe](README.tr.md)
 
-Kablo (Cable) modunda ise uygulama `0xA4` komutuyla pili doğrudan sorar.
+Keychron's stock firmware doesn't forward the battery level to the PC over the 2.4 GHz
+receiver. This patch makes the keyboard **push its battery state every 5 seconds** on the
+raw HID channel (usage page `0xFF60`). BatteryTray listens on that channel.
 
-## Paket biçimi
+In Cable mode the app asks for the battery directly with the `0xA4` command.
+
+## Packet format
 
 ```
 [0] 0xA4   (KC_GET_BATTERY)
-[1] yüzde (0–100)
-[2] voltaj mV, düşük bayt
-[3] voltaj mV, yüksek bayt
-[4] şarj durumu: 0 = pilde, 1 = şarj oluyor, 2 = dolu
-[5] bağlantı: 0x01 USB, 0x02 Bluetooth, 0x04 2.4 GHz
+[1] percentage (0–100)
+[2] voltage mV, low byte
+[3] voltage mV, high byte
+[4] charge state: 0 = on battery, 1 = charging, 2 = full
+[5] transport: 0x01 USB, 0x02 Bluetooth, 0x04 2.4 GHz
 ```
 
-## Değişiklikler
+## Changes
 
-- `keychron_raw_hid.c/.h`: `KC_GET_BATTERY (0xA4)` komutu ve `kc_battery_push()`
-- `wireless/battery.c/.h`: `battery_get_charging_state()`; Cable modunda da voltaj ölçümü
-- `k2_max/k2_max.c`: 2.4 GHz'deyken 5 sn'de bir pil paketi gönderen `keychron_task_kb()`
+- `keychron_raw_hid.c/.h`: `KC_GET_BATTERY (0xA4)` command and `kc_battery_push()`
+- `wireless/battery.c/.h`: `battery_get_charging_state()`; voltage sampling in Cable mode too
+- `k2_max/k2_max.c`: `keychron_task_kb()` that sends a battery packet every 5 s while on 2.4 GHz
 
-Tuş davranışına, ışıklara ve Bluetooth moduna dokunmaz.
+Key behaviour, lighting and Bluetooth mode are untouched.
 
-## Derleme
+## Building
 
-Taban: [Keychron/qmk_firmware](https://github.com/Keychron/qmk_firmware), `2025q3` dalı,
+Base: [Keychron/qmk_firmware](https://github.com/Keychron/qmk_firmware), branch `2025q3`,
 commit `c5d998442710b38650903937249144a0cd728ebe`.
 
 ```bash
 git clone -b 2025q3 https://github.com/Keychron/qmk_firmware.git
 cd qmk_firmware
-git apply /yol/k2max-battery-push.patch
-make keychron/k2_max/iso/rgb:keychron      # ya da ansi/jis, rgb/white
+git apply /path/to/k2max-battery-push.patch
+make keychron/k2_max/iso/rgb:keychron      # or ansi/jis, rgb/white
 ```
 
-Hazır `.bin` dosyaları reponun **Releases** sayfasında.
+Prebuilt `.bin` files are on the repo's **Releases** page (ISO layout).
 
-## Yükleme
+## Flashing
 
-1. [QMK Toolbox](https://github.com/qmk/qmk_toolbox/releases)'u kur, `.bin` dosyasını aç.
-2. Kabloyu çıkar, yan anahtarı **Cable**'a getir, **Esc**'ye basılıyken kabloyu tak.
-3. `STM32 DFU device connected` görünce **Flash**.
+1. Install [QMK Toolbox](https://github.com/qmk/qmk_toolbox/releases) and open the `.bin` file.
+2. Unplug the cable, set the side switch to **Cable**, hold **Esc** while plugging the cable back in.
+3. When `STM32 DFU device connected` appears, click **Flash**.
 
-Geri dönmek için [Keychron Launcher](https://launcher.keychron.com/) üzerinden resmi
-firmware'i yükleyebilirsin. İşlemcinin yükleme modu ROM'da olduğu için klavye kalıcı
-olarak bozulmaz.
+To go back, flash the official firmware with [Keychron Launcher](https://launcher.keychron.com/).
+The MCU's bootloader lives in ROM, so the keyboard can't be permanently bricked.
 
-## Kaynak ve lisans
+## Source and license
 
-Yama, [OutersGIT/k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware)
-projesinin K10 HE için yaptığı değişikliklerin K2 Max'e uyarlanmış halidir.
-QMK Firmware türevi olduğu için **GPL-2.0-or-later** lisanslıdır.
+This patch is a port to the K2 Max of the K10 HE changes from
+[OutersGIT/k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware).
+As a QMK Firmware derivative it is licensed **GPL-2.0-or-later**.

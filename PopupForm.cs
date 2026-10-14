@@ -18,7 +18,10 @@ internal sealed class PopupForm : Form
     private readonly System.Windows.Forms.Timer _nearTimer = new() { Interval = 2000 };
     public DateTime LastHidden { get; private set; }
 
-    private const int W = 320, Header = 52, RowH = 62, Footer = 14;
+    private const int W = 320, Header = 52, RowH = 62, PartsRowH = 118, Footer = 14;
+
+    // Birden fazla pili olan cihazlar (AirPods) daha yüksek bir satırda sütunlarla çizilir
+    private static int RowHeight(DeviceStatus d) => d.Parts is { Count: > 0 } ? PartsRowH : RowH;
 
     private static readonly Color Bg = Color.FromArgb(32, 32, 32);
     private static readonly Color RowBg = Color.FromArgb(43, 43, 43);
@@ -90,7 +93,7 @@ internal sealed class PopupForm : Form
     /// Satır sayısına göre yüksekliği ayarla; panel açıksa alt kenarı sabit tut
     private void Relayout()
     {
-        int h = Header + RowH * Math.Max(1, Rows.Count) + Footer;
+        int h = Header + (Rows.Count == 0 ? RowH : Rows.Sum(RowHeight)) + Footer;
         if (h != Height)
         {
             int bottom = Bottom;
@@ -147,7 +150,7 @@ internal sealed class PopupForm : Form
         // Sekmeler
         using (var tabFont = new Font("Segoe UI Semibold", 10f))
         {
-            string[] tabs = { "Cihazlarım", "Yakındakiler" };
+            string[] tabs = { L.T("Cihazlarım", "My devices"), L.T("Yakındakiler", "Nearby") };
             for (int i = 0; i < 2; i++)
             {
                 var r = new Rectangle(i * Width / 2, 10, Width / 2, 28);
@@ -163,13 +166,13 @@ internal sealed class PopupForm : Form
         int y = Header;
         if (Rows.Count == 0)
         {
-            TextRenderer.DrawText(g, _tab == 1 ? "Yakında Bluetooth cihazı bulunamadı" : "Cihaz yok", noteFont,
+            TextRenderer.DrawText(g, _tab == 1 ? L.T("Yakında Bluetooth cihazı bulunamadı", "No Bluetooth devices nearby") : L.T("Cihaz yok", "No devices"), noteFont,
                 new Rectangle(10, y, Width - 20, RowH - 8), Text2,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
         foreach (var it in Rows)
         {
-            var row = new Rectangle(10, y, Width - 20, RowH - 8);
+            var row = new Rectangle(10, y, Width - 20, RowHeight(it) - 8);
             using (var rb = new SolidBrush(RowBg))
             using (var rp = Rounded(row, 8))
                 g.FillPath(rb, rp);
@@ -182,13 +185,13 @@ internal sealed class PopupForm : Form
                 DeviceKind.Mouse => "",
                 _ => "",
             };
-            var iconRect = new Rectangle(row.X + 10, row.Y, 32, row.Height);
+            var iconRect = new Rectangle(row.X + 10, row.Y, 32, RowH - 8);   // simge her zaman üst kısımda
             TextRenderer.DrawText(g, glyph, iconFont, iconRect, Text1,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
             // Ad ve not
             int tx = row.X + 50;
-            int textW = row.Width - 50 - 90;
+            int textW = row.Width - 50 - (it.Parts is { Count: > 0 } ? 12 : 90);
             TextRenderer.DrawText(g, it.Name, nameFont, new Rectangle(tx, row.Y + 8, textW, 20), Text1,
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             string note = it.Note;   // biçim Notes.Make ile tek yerden belirleniyor
@@ -197,14 +200,50 @@ internal sealed class PopupForm : Form
 
             // Sağ taraf: yüzde + çubuk
             int rx = row.Right - 80;
-            if (it.Percent is int p)
+            if (it.Parts is { Count: > 0 } parts)
+            {
+                // Sol / Sağ / Kutu: alt kısımda yan yana eşit sütunlar
+                int pad = 12, gap = 8;
+                int colW = (row.Width - 2 * pad - gap * (parts.Count - 1)) / parts.Count;
+                int cy = row.Y + 54;
+                using var labelFont = new Font("Segoe UI", 8.5f);
+                using var valFont = new Font("Segoe UI Semibold", 11.5f);
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    var part = parts[i];
+                    int cx = row.X + pad + i * (colW + gap);
+                    TextRenderer.DrawText(g, part.Label, labelFont, new Rectangle(cx, cy, colW, 16), Text2,
+                        TextFormatFlags.Left | TextFormatFlags.NoPadding);
+
+                    string val = part.Percent is int pp
+                        ? (part.Charging ? "⚡" : "") + (part.Approx ? "~" : "") + L.Pct(pp)
+                        : "—";
+                    TextRenderer.DrawText(g, val, valFont, new Rectangle(cx, cy + 16, colW, 22),
+                        part.Percent is null ? Text2 : Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+
+                    var bar = new Rectangle(cx, cy + 42, colW, 5);
+                    using (var tb = new SolidBrush(Track))
+                    using (var tp = Rounded(bar, 2))
+                        g.FillPath(tb, tp);
+                    if (part.Percent is int fp2)
+                    {
+                        Color pc = part.Charging || fp2 >= 25 ? Color.FromArgb(60, 200, 90)
+                                 : fp2 < 10 ? Color.FromArgb(240, 70, 70) : Color.FromArgb(240, 190, 40);
+                        int fw2 = Math.Max(5, bar.Width * fp2 / 100);
+                        using var fb2 = new SolidBrush(pc);
+                        using var fpath = Rounded(new Rectangle(bar.X, bar.Y, fw2, bar.Height), 2);
+                        g.FillPath(fb2, fpath);
+                    }
+                }
+            }
+            else if (it.Percent is int p)
             {
                 Color c = it.Charging ? Color.FromArgb(60, 200, 90)
                         : p < 10 ? Color.FromArgb(240, 70, 70)
                         : p < 25 ? Color.FromArgb(240, 190, 40)
                         : Color.FromArgb(60, 200, 90);
 
-                string pt = (it.Charging ? "⚡" : "") + $"%{p}";
+                string pt = (it.Charging ? "⚡" : "") + L.Pct(p);
                 TextRenderer.DrawText(g, pt, pctFont, new Rectangle(rx, row.Y + 6, 70, 26), Text1,
                     TextFormatFlags.Right | TextFormatFlags.NoPadding);
 
@@ -228,7 +267,7 @@ internal sealed class PopupForm : Form
                     TextFormatFlags.Right | TextFormatFlags.NoPadding);
             }
 
-            y += RowH;
+            y += RowHeight(it);
         }
     }
 

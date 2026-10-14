@@ -106,7 +106,7 @@ internal sealed class Hs80Device : IDisposable
             .ToList();
         Log.W($"aday arayüz sayısı: {candidates.Count}");
         Found = candidates.Count > 0;
-        if (!Found) LastError = "Bulunamadı";
+        if (!Found) LastError = L.T("Bulunamadı", "Not found");
 
         foreach (var dev in candidates)
         {
@@ -120,7 +120,7 @@ internal sealed class Hs80Device : IDisposable
             _outLen = Math.Max(dev.GetMaxOutputReportLength(), 64);
             Path = dev.DevicePath;
             // Alıcı kendini "... Receiver" diye tanıtır; panelde kulaklığı temsil ettiği için "Headset" yaz
-            ProductName = HidNames.Of(dev, "Kulaklık").Replace("Receiver", "Headset");
+            ProductName = HidNames.Of(dev, L.T("Kulaklık", "Headset")).Replace("Receiver", "Headset");
 
             // Cihazın tanımladığı output report ID'lerini oku, 0x02 yoksa ilkini kullan.
             try
@@ -140,7 +140,7 @@ internal sealed class Hs80Device : IDisposable
                 if (route == Hs80Protocol.RouteHeadset) Wake();
                 if (ReadBatteryRaw() is not null) { Log.W("  OK"); LastError = null; return true; }
             }
-            LastError = "kulaklıktan geçerli cevap gelmedi";
+            LastError = L.T("kulaklıktan geçerli cevap gelmedi", "no valid response from headset");
           }
           catch (Exception ex)
           {
@@ -168,7 +168,7 @@ internal sealed class Hs80Device : IDisposable
             {
                 // Kablo takıldı/çıkarıldıysa doğru arayüz değişmiş olabilir:
                 // bağlantıyı kapat, bir sonraki turda baştan arasın.
-                LastError = "cevap alınamadı, yeniden aranacak";
+                LastError = L.T("cevap alınamadı, yeniden aranacak", "no response, will retry");
                 Close();
                 return null;
             }
@@ -277,10 +277,10 @@ internal sealed class TrayApp : ApplicationContext
     private readonly Hs80Device _device = new();
     private readonly PopupForm _popup = new();
     // Başlangıçta hiçbiri gösterilmez; cihaz bulununca adıyla birlikte panele eklenir
-    private DeviceStatus _headset = new(DeviceKind.Headset, "Kulaklık", null, false, "Aranıyor...", Present: false);
-    private DeviceStatus _mouse = new(DeviceKind.Mouse, "Fare", null, false, "Aranıyor...", Present: false);
-    private DeviceStatus _keyboard = new(DeviceKind.Keyboard, "Klavye", null, false, "Aranıyor...", Present: false);
-    private DeviceStatus _asusKeyboard = new(DeviceKind.Keyboard, "ASUS klavye", null, false, "Aranıyor...", Present: false);
+    private DeviceStatus _headset = new(DeviceKind.Headset, L.T("Kulaklık", "Headset"), null, false, "...", Present: false);
+    private DeviceStatus _mouse = new(DeviceKind.Mouse, L.T("Fare", "Mouse"), null, false, "...", Present: false);
+    private DeviceStatus _keyboard = new(DeviceKind.Keyboard, L.T("Klavye", "Keyboard"), null, false, "...", Present: false);
+    private DeviceStatus _asusKeyboard = new(DeviceKind.Keyboard, L.T("ASUS klavye", "ASUS keyboard"), null, false, "...", Present: false);
     private readonly System.Windows.Forms.Timer _timer;
     private Icon? _currentIcon;
     private bool _busy;
@@ -293,36 +293,7 @@ internal sealed class TrayApp : ApplicationContext
 
     public TrayApp()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Pil durumu", null, (_, _) => { _popup.SetItems(Items); _popup.ShowAt(Cursor.Position); });
-        menu.Items.Add("Yenile", null, async (_, _) => await RefreshAsync());
-        menu.Items.Add("Cihazları listele (debug)", null, (_, _) => DumpDevices());
-        menu.Items.Add("Logu aç", null, (_, _) =>
-        {
-            if (!File.Exists(Log.File_)) File.WriteAllText(Log.File_, "");
-            Process.Start(new ProcessStartInfo(Log.File_) { UseShellExecute = true });
-        });
-        menu.Items.Add("ASUS tanılama", null, async (_, _) =>
-        {
-            // Klavyeyi kablolu/kablosuz değiştirdikten sonra tekrar çalıştırmak için
-            await Task.Run(() => { try { AsusKeyboard.Diagnose(); } catch (Exception ex) { Log.W("[ASUS tanı] " + ex); } });
-            if (!File.Exists(Log.File_)) File.WriteAllText(Log.File_, "");
-            Process.Start(new ProcessStartInfo(Log.File_) { UseShellExecute = true });
-        });
-        // Windows açılışında otomatik başlatma (Çıkış'ın hemen üstünde)
-        var autoStart = new ToolStripMenuItem("Windows ile başlat") { Checked = AutoStart.IsEnabled };
-        autoStart.Click += (_, _) =>
-        {
-            AutoStart.Set(!autoStart.Checked);
-            autoStart.Checked = AutoStart.IsEnabled;
-        };
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(autoStart);
-
-        // Çıkış her zaman en altta
-        menu.Items.Add("Çıkış", null, (_, _) => ExitThread());
-
-        _tray = new NotifyIcon { ContextMenuStrip = menu, Visible = true, Text = "Cihazlar aranıyor..." };
+        _tray = new NotifyIcon { ContextMenuStrip = BuildMenu(), Visible = true, Text = L.T("Cihazlar aranıyor...", "Looking for devices...") };
         SetIcon("?", Color.Gray);
         _tray.MouseClick += OnTrayClick;
         _popup.NearbyProvider = AirPods.Nearby;
@@ -336,6 +307,63 @@ internal sealed class TrayApp : ApplicationContext
         _timer.Tick += async (_, _) => await RefreshAsync();
         _timer.Start();
         _ = RefreshAsync();
+    }
+
+    /// Sağ tık menüsü. Dil değişince baştan kurulur.
+    private ContextMenuStrip BuildMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(L.T("Pil durumu", "Battery status"), null, (_, _) => { _popup.SetItems(Items); _popup.ShowAt(Cursor.Position); });
+        menu.Items.Add(L.T("Yenile", "Refresh"), null, async (_, _) => await RefreshAsync());
+        menu.Items.Add(L.T("Tanılama", "Diagnostics"), null, async (_, _) =>
+        {
+            // Bağlı tüm HID cihazlarını ve desteklenen markaların cevaplarını log'a yazar, sonra log'u açar.
+            // Yeni bir cihaz eklemek ya da bir sorunu çözmek için bu log yeterli.
+            await Task.Run(RunDiagnostics);
+            OpenLog();
+        });
+        menu.Items.Add(L.T("Logu aç", "Open log"), null, (_, _) => OpenLog());
+
+        // Dil seçimi
+        // Her dilde "Language" yazar; yanlış dilde kalan biri de kolayca bulabilsin
+        var lang = new ToolStripMenuItem("Language");
+        foreach (var (value, text) in new[] { (L.Lang.Auto, L.T("Otomatik (Windows dili)", "Automatic (Windows language)")),
+                                              (L.Lang.Tr, "Türkçe"), (L.Lang.En, "English") })
+        {
+            var item = new ToolStripMenuItem(text) { Checked = L.Setting == value };
+            item.Click += (_, _) => ChangeLanguage(value);
+            lang.DropDownItems.Add(item);
+        }
+
+        // Windows açılışında otomatik başlatma (Çıkış'ın hemen üstünde)
+        var autoStart = new ToolStripMenuItem(L.T("Windows ile başlat", "Start with Windows")) { Checked = AutoStart.IsEnabled };
+        autoStart.Click += (_, _) =>
+        {
+            AutoStart.Set(!autoStart.Checked);
+            autoStart.Checked = AutoStart.IsEnabled;
+        };
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(lang);
+        menu.Items.Add(autoStart);
+
+        // Çıkış her zaman en altta
+        menu.Items.Add(L.T("Çıkış", "Exit"), null, (_, _) => ExitThread());
+        return menu;
+    }
+
+    private static void OpenLog()
+    {
+        if (!File.Exists(Log.File_)) File.WriteAllText(Log.File_, "");
+        Process.Start(new ProcessStartInfo(Log.File_) { UseShellExecute = true });
+    }
+
+    private void ChangeLanguage(L.Lang lang)
+    {
+        L.Set(lang);
+        // Eski menü şu an tıklanan menü olduğu için burada dispose edilmiyor
+        _tray.ContextMenuStrip = BuildMenu();
+        _popup.Invalidate();
+        _ = RefreshAsync();   // cihaz durum yazıları yeni dille yeniden üretilsin
     }
 
     // Düşük pil uyarısı: her cihaz için %10 ve %5 eşiğinde birer kez Windows bildirimi.
@@ -360,8 +388,10 @@ internal sealed class TrayApp : ApplicationContext
             _warnedAt[d.Kind] = level;
             Log.W($"düşük pil uyarısı: {d.Name} %{p}");
             _tray.ShowBalloonTip(10_000,
-                level == 5 ? "Pil kritik seviyede" : "Pil azaldı",
-                $"{d.Name}: %{p} kaldı. Şarja takmayı unutma.",
+                level == 5 ? L.T("Pil kritik seviyede", "Battery critical") : L.T("Pil azaldı", "Battery low"),
+                // AirPods değerleri 10'luk adımlarla gelir: yaklaşık olduğunu belirt
+                L.T($"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}%{p} kaldı. Şarja takmayı unutma.",
+                    $"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}{p}% left. Don't forget to charge it."),
                 level == 5 ? ToolTipIcon.Error : ToolTipIcon.Warning);
         }
     }
@@ -417,7 +447,7 @@ internal sealed class TrayApp : ApplicationContext
             Log.W("refresh hatası: " + ex);
             _blink.Stop();
             SetIcon("!", Color.OrangeRed);
-            var tip = "Hata: " + ex.Message;
+            var tip = L.T("Hata: ", "Error: ") + ex.Message;
             _tray.Text = tip.Length > 120 ? tip[..120] : tip;
         }
         finally
@@ -434,14 +464,20 @@ internal sealed class TrayApp : ApplicationContext
         {
             _blink.Stop();
             SetIcon("–", Color.Gray);
-            var tip = "Kulaklık: " + (_device.LastError ?? "bağlı değil");
+            var tip = L.T("Kulaklık: ", "Headset: ") + (_device.LastError ?? L.T("bağlı değil", "not connected"));
             _tray.Text = tip.Length > 120 ? tip[..120] : tip;
             return;
         }
 
         _pct = (int)Math.Round(info.Percent);
         _state = info.ChargeState;
-        string state = info.ChargeState switch { 0 => "pilde", 1 => "şarj oluyor", 2 => "dolu", _ => "durum bilinmiyor" };
+        string state = info.ChargeState switch
+        {
+            0 => L.T("pilde", "on battery"),
+            1 => L.T("şarj oluyor", "charging"),
+            2 => L.T("dolu", "full"),
+            _ => L.T("durum bilinmiyor", "unknown state")
+        };
 
         // Sadece bir cihaz şarj oluyorsa iki görsel arasında dön
         if (Items.Any(i => i.Charging))
@@ -454,7 +490,7 @@ internal sealed class TrayApp : ApplicationContext
             _blinkOn = false;
         }
         RenderBattery();
-        var t = $"{_headset.Name}: %{info.Percent:0.#} ({state})";
+        var t = $"{_headset.Name}: {L.Pct(info.Percent, "0.#")} ({state})";
         _tray.Text = t.Length > 120 ? t[..120] : t;   // en fazla 127 karakter
     }
 
@@ -463,7 +499,7 @@ internal sealed class TrayApp : ApplicationContext
         if (info is null)
         {
             _headset = _headset with { Percent = null, Charging = false, Present = _device.Found,
-                                       Note = _device.LastError ?? "Bağlı değil" };
+                                       Note = _device.LastError ?? L.T("Bağlı değil", "Not connected") };
             return;
         }
         string conn = _device.Path?.Contains("pid_0a96", StringComparison.OrdinalIgnoreCase) == true ? Notes.Cable : Notes.Wireless;
@@ -738,22 +774,38 @@ internal sealed class TrayApp : ApplicationContext
         ApplyBitmap(bmp);
     }
 
-    private static void DumpDevices()
+    /// Tanılama: tüm HID cihazlarının dökümü + markaya özel denemeler (şimdilik ASUS).
+    private static void RunDiagnostics()
     {
-        var sb = new StringBuilder();
-        foreach (var d in DeviceList.Local.GetHidDevices(Hs80Protocol.CorsairVid))
+        Log.W("========== Tanılama başladı ==========");
+        Log.W($"BatteryTray {typeof(TrayApp).Assembly.GetName().Version}, Windows {Environment.OSVersion.Version}");
+        try
         {
-            string name;
-            try { name = d.GetProductName(); } catch { name = "?"; }
-            sb.AppendLine($"PID=0x{d.ProductID:X4}  {name}");
-            sb.AppendLine($"  vendor(0xFF42)={Hs80Device.HasVendorUsagePage(d)}  out={d.GetMaxOutputReportLength()} in={d.GetMaxInputReportLength()}");
-            sb.AppendLine($"  {d.DevicePath}");
+            foreach (var g in DeviceList.Local.GetHidDevices().GroupBy(d => (d.VendorID, d.ProductID)).OrderBy(g => g.Key.VendorID))
+            {
+                var first = g.First();
+                string mfr = "?", name = "?";
+                try { mfr = first.GetManufacturer(); } catch { }
+                try { name = first.GetProductName(); } catch { }
+                Log.W($"[HID] VID=0x{g.Key.VendorID:X4} PID=0x{g.Key.ProductID:X4} \"{mfr}\" \"{name}\" ({g.Count()} arayüz)");
+                foreach (var d in g)
+                {
+                    string usages = "?";
+                    try
+                    {
+                        usages = string.Join(",", d.GetReportDescriptor().DeviceItems.SelectMany(i => i.Usages.GetAllValues())
+                            .Select(u => "0x" + (u >> 16).ToString("X4")).Distinct());
+                    }
+                    catch { }
+                    Log.W($"        pages={usages} in={d.GetMaxInputReportLength()} out={d.GetMaxOutputReportLength()} " +
+                          $"feat={d.GetMaxFeatureReportLength()} {d.DevicePath}");
+                }
+            }
         }
-        if (sb.Length == 0) sb.AppendLine("Corsair HID cihazı bulunamadı.");
+        catch (Exception ex) { Log.W("[HID] döküm hatası: " + ex.Message); }
 
-        var file = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "hs80_devices.txt");
-        File.WriteAllText(file, sb.ToString());
-        Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
+        try { AsusKeyboard.Diagnose(); } catch (Exception ex) { Log.W("[ASUS tanı] " + ex); }
+        Log.W("========== Tanılama bitti ==========");
     }
 
     protected override void Dispose(bool disposing)

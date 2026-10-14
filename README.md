@@ -1,73 +1,81 @@
 # BatteryTray
 
-Kablosuz kulaklık, fare, klavye ve AirPods'un pil seviyesini Windows sistem tepsisinde
-gösteren küçük bir uygulama. Üretici yazılımı (iCUE, Armoury Crate, GG …) gerektirmez;
-cihazlarla doğrudan USB HID ve Bluetooth LE üzerinden konuşur.
+**English** · [Türkçe](README.tr.md)
 
-## Özellikler
+A small Windows tray app that shows the battery level of your wireless headset, mouse,
+keyboard and AirPods. No vendor software needed (iCUE, Armoury Crate, GG …) — it talks to
+the devices directly over USB HID and Bluetooth LE.
 
-- **Tepsi simgesi:** Kulaklığın pil yüzdesi, küçük boyutta bile okunacak piksel rakamlarla.
-  Bir cihaz şarj oluyorsa simge, yüzde ile şarj olan cihazın yeşil simgesi arasında döner.
-- **Pil paneli:** Simgeye tıklayınca, tıklanan yerin üstünde açılan koyu panel.
-  - *Cihazlarım:* bağlı cihazların adı, bağlantı türü, yüzdesi ve pil çubuğu
-  - *Yakındakiler:* çevredeki Bluetooth LE cihazları; AirPods/Beats için sol, sağ ve kutu pili
-- **Düşük pil bildirimi:** %10 ve %5'in altında Windows bildirimi (cihaz başına bir kez).
-- **Windows ile başlat:** sağ tık menüsünden açılıp kapatılır, yönetici izni gerekmez.
+## Features
 
-## Desteklenen cihazlar
+- **Tray icon:** the headset's battery percentage, drawn with pixel-perfect digits that stay
+  readable even at 16 px. While a device is charging, the icon alternates between the
+  percentage and a green icon of the charging device.
+- **Battery panel:** click the icon to open a dark panel right above it.
+  - *My devices:* name, connection type, percentage and a battery bar for each connected device
+  - *Nearby:* Bluetooth LE devices around you; left, right and case battery for AirPods/Beats
+- **Low battery alerts:** Windows notification below 10 % and 5 % (once per device).
+- **Start with Windows:** toggle from the right-click menu, no admin rights required.
+- **English / Turkish UI:** follows the Windows display language by default; change it from
+  right-click → **Language**.
 
-| Tür | Cihazlar | Not |
+## Supported devices
+
+| Type | Devices | Notes |
 |---|---|---|
-| Kulaklık | Corsair HS80 MAX, Virtuoso MAX, Void Wireless V2 | 2.4 GHz alıcı ya da USB kablo |
-| Fare | ASUS ROG kablosuz fareler (Gladius III, Harpe, Keris, Chakram, Spatha …) | Alıcı ya da USB kablo |
-| Klavye | Keychron K2 Max | **Yamalı firmware gerekir**, bkz. [`firmware/keychron-k2-max`](firmware/keychron-k2-max) |
-| Klavye | ASUS ROG kablosuz klavyeler (Omni Receiver ile; ör. Strix Scope II 96 Wireless) | Diğer ROG klavyeler denenmedi |
-| Kulak içi | AirPods, AirPods Pro, Beats | Bluetooth LE yayınından, 10'ar puanlık hassasiyet |
+| Headset | Corsair HS80 MAX, Virtuoso MAX, Void Wireless V2 | 2.4 GHz receiver or USB cable |
+| Mouse | ASUS ROG wireless mice (Gladius III, Harpe, Keris, Chakram, Spatha …) | Receiver or USB cable |
+| Keyboard | Keychron K2 Max | **Requires patched firmware**, see [`firmware/keychron-k2-max`](firmware/keychron-k2-max) |
+| Keyboard | ASUS ROG wireless keyboards (via Omni Receiver, e.g. Strix Scope II 96 Wireless) | Other ROG keyboards untested |
+| Earbuds | AirPods, AirPods Pro, Beats | From Bluetooth LE advertisements, 10 % steps |
 
-Listede olmayan markalar (Logitech, Razer, SteelSeries, HyperX …) her biri farklı bir
-protokol kullandığı için şimdilik görünmez. Katkılara açık.
+Brands not listed (Logitech, Razer, SteelSeries, HyperX …) each use their own protocol and
+won't show up yet. Contributions welcome.
 
-## Kurulum
+## Installation
 
-1. [Releases](../../releases) sayfasından `BatteryTray.exe`'yi indir.
-2. Çalıştır. Simge sağ altta belirir (görünmüyorsa `^` okuna tıklayıp görev çubuğuna sürükle).
-3. İstersen sağ tık → **Windows ile başlat**.
+1. Download `BatteryTray.exe` from the [Releases](../../releases) page.
+2. Run it. The icon appears in the bottom-right corner (if you don't see it, click the `^`
+   arrow and drag it onto the taskbar).
+3. Optionally: right-click → **Start with Windows**.
 
-.NET kurmana gerek yok; exe kendi içinde her şeyi taşır.
+No .NET install needed; the exe is self-contained.
 
-> İlk çalıştırmada Windows SmartScreen "tanınmayan uygulama" uyarısı verebilir:
-> **Ek bilgi → Yine de çalıştır**. Exe imzalı değil; kaynak kodu bu repoda.
+> On first launch Windows SmartScreen may show an "unrecognized app" warning:
+> **More info → Run anyway**. The exe isn't signed; the source code is in this repo.
 
-## Kaynaktan derleme
+## Building from source
 
-[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) gerekir.
+Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
 .\out\BatteryTray.exe
 ```
 
-## Sorun giderme
+## Troubleshooting
 
-Sağ tık menüsünde:
+From the right-click menu:
 
-- **Cihazları listele (debug):** bağlı Corsair HID arayüzlerini listeler.
-- **Logu aç:** `batterytray_log.txt` — cihaz arama ve hata ayrıntıları.
+- **Diagnostics:** writes every connected HID device (vendor, product, interfaces) and the
+  responses of supported brands to the log, then opens it.
+- **Open log:** opens `batterytray_log.txt` — device discovery and error details.
 
-Yeni bir cihaz eklemek istiyorsan log'u bir issue'ya ekle.
+To request support for a new device, run **Diagnostics** with the device connected and
+attach the log to an issue.
 
-## Teşekkürler
+## Credits
 
-Protokoller bu açık kaynak projelerden öğrenildi:
+Protocols were learned from these open-source projects:
 
-- [HeadsetControl](https://github.com/Sapd/HeadsetControl) — Corsair kablosuz kulaklık protokolü
-- [hs80-max-control](https://github.com/jacohallum/hs80-max-control) — HS80 MAX pil ve şarj özellikleri
-- [BatteryTool](https://github.com/1gcat/BatteryTool) ve [G-Helper](https://github.com/seerge/g-helper) — ASUS ROG fare pil sorgusu
-- [battery-tray](https://github.com/mikgangal/battery-tray) — ASUS ROG klavye (Omni Receiver) pil sorgusu
-- [k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware) — Keychron 2.4 GHz pil yaması
-- [OpenPods](https://github.com/adolfintel/OpenPods) — AirPods Bluetooth LE yayın biçimi
+- [HeadsetControl](https://github.com/Sapd/HeadsetControl) — Corsair wireless headset protocol
+- [hs80-max-control](https://github.com/jacohallum/hs80-max-control) — HS80 MAX battery and charge properties
+- [BatteryTool](https://github.com/1gcat/BatteryTool) and [G-Helper](https://github.com/seerge/g-helper) — ASUS ROG mouse battery query
+- [battery-tray](https://github.com/mikgangal/battery-tray) — ASUS ROG keyboard (Omni Receiver) battery query
+- [k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware) — Keychron 2.4 GHz battery patch
+- [OpenPods](https://github.com/adolfintel/OpenPods) — AirPods Bluetooth LE advertisement format
 
-## Lisans
+## License
 
-[GPL-3.0](LICENSE). Keychron firmware yaması QMK türevi olduğu için GPL-2.0-or-later.
-Bu proje Corsair, ASUS, Keychron, Apple ya da SteelSeries ile bağlantılı değildir.
+[GPL-3.0](LICENSE). The Keychron firmware patch is a QMK derivative and is GPL-2.0-or-later.
+This project is not affiliated with Corsair, ASUS, Keychron, Apple or SteelSeries.

@@ -11,18 +11,22 @@ internal enum DeviceKind { Headset, Mouse, Keyboard, Earbuds, Other }
 /// Bağlantı her zaman "Kablosuz" ya da "USB kablo"; "Dolu" sadece kablodayken anlamlı.
 internal static class Notes
 {
-    public const string Wireless = "Kablosuz";
-    public const string Cable = "USB kablo";
+    public static string Wireless => L.T("Kablosuz", "Wireless");
+    public static string Cable => L.T("USB kablo", "USB cable");
 
     public static string Make(string conn, bool charging, bool full = false) =>
-        charging ? $"Şarj oluyor · {conn}"
-        : full && conn == Cable ? $"Dolu · {conn}"
+        charging ? L.T("Şarj oluyor", "Charging") + $" · {conn}"
+        : full && conn == Cable ? L.T("Dolu", "Full") + $" · {conn}"
         : conn;
 }
 
 /// Present = false: cihaz bu bilgisayarda yok, panelde gösterilmez.
+/// Parts: birden fazla pili olan cihazlar için (AirPods: sol, sağ, kutu). Panelde ayrı sütunlar olarak çizilir.
 internal sealed record DeviceStatus(DeviceKind Kind, string Name, int? Percent, bool Charging, string Note,
-    bool Wired = false, bool Present = true);
+    bool Wired = false, bool Present = true, IReadOnlyList<BatteryPart>? Parts = null);
+
+/// Approx: değer yaklaşık (AirPods yayınları 10'ar puanlık adımlarla gelir), panelde "~" ile gösterilir.
+internal sealed record BatteryPart(string Label, int? Percent, bool Charging, bool Approx = false);
 
 /// Cihaz adları elle yazılmaz: USB'de cihazın kendini tanıttığı ad (product string) kullanılır.
 internal static class HidNames
@@ -90,8 +94,8 @@ internal static class RogMouse
 
         if (last is not null) return last;
         return all.Count == 0
-            ? new(DeviceKind.Mouse, "Fare", null, false, "Bulunamadı", Present: false)
-            : new(DeviceKind.Mouse, HidNames.Of(all[0], "ASUS fare"), null, false, "Desteklenmeyen model");
+            ? new(DeviceKind.Mouse, L.T("Fare", "Mouse"), null, false, L.T("Bulunamadı", "Not found"), Present: false)
+            : new(DeviceKind.Mouse, HidNames.Of(all[0], "ASUS fare"), null, false, L.T("Desteklenmeyen model", "Unsupported model"));
     }
 
     private static DeviceStatus Query(HidDevice dev, Profile p)
@@ -129,7 +133,7 @@ internal static class RogMouse
                     if (n < 11 || buf[0] != p.ReportId) continue;
 
                     if (buf[1] == 0xFF && buf[2] == 0xAA)
-                        return new(DeviceKind.Mouse, name, null, false, "Uykuda / kapalı");
+                        return new(DeviceKind.Mouse, name, null, false, L.T("Uykuda / kapalı", "Asleep / off"));
 
                     if (buf[1] == 0x12 && buf[2] == 0x07)
                     {
@@ -143,12 +147,12 @@ internal static class RogMouse
                     }
                 }
             }
-            return new(DeviceKind.Mouse, name, null, false, "Cevap yok");
+            return new(DeviceKind.Mouse, name, null, false, L.T("Cevap yok", "No response"));
         }
         catch (Exception ex)
         {
             Log.W($"[ROG] {name} hata: {ex.Message}");
-            return new(DeviceKind.Mouse, name, null, false, "Okunamadı");
+            return new(DeviceKind.Mouse, name, null, false, L.T("Okunamadı", "Read failed"));
         }
     }
 }
@@ -177,7 +181,7 @@ internal static class AsusKeyboard
 
     /// Tanılama: bağlı TÜM ASUS HID arayüzlerini ayrıntılı loglar ve klavye arayüzü olan
     /// cihazların vendor kanallarına sadece okuma amaçlı pil sorguları gönderip cevapları yazar.
-    /// İlk açılışta bir kez kendiliğinden, sonra menüden "ASUS tanılama" ile çalışır.
+    /// İlk açılışta bir kez kendiliğinden, sonra menüdeki "Tanılama" ile çalışır.
     public static void Diagnose()
     {
         Log.W("========== ASUS tanılama başladı ==========");
@@ -293,7 +297,7 @@ internal static class AsusKeyboard
             if (r.Percent is not null) return r;
             last = r;
         }
-        return last ?? new(DeviceKind.Keyboard, "ASUS klavye", null, false, "Bulunamadı", Present: false);
+        return last ?? new(DeviceKind.Keyboard, L.T("ASUS klavye", "ASUS keyboard"), null, false, L.T("Bulunamadı", "Not found"), Present: false);
     }
 
     private static DeviceStatus Query(HidDevice dev)
@@ -329,7 +333,7 @@ internal static class AsusKeyboard
                     try { buf = s.Read(); } catch (TimeoutException) { continue; }
                     if (buf.Length < 10 || buf[0] != 0x02) continue;
                     if (buf[1] == 0xFF && buf[2] == 0xAA)
-                        return new(DeviceKind.Keyboard, name, null, false, "Uykuda / kapalı");
+                        return new(DeviceKind.Keyboard, name, null, false, L.T("Uykuda / kapalı", "Asleep / off"));
                     if (buf[1] != 0x12 || buf[2] != 0x01) continue;
 
                     int pct = buf[6];
@@ -343,12 +347,12 @@ internal static class AsusKeyboard
                         Notes.Make(viaReceiver ? Notes.Wireless : Notes.Cable, charging));
                 }
             }
-            return new(DeviceKind.Keyboard, name, null, false, "Cevap yok");
+            return new(DeviceKind.Keyboard, name, null, false, L.T("Cevap yok", "No response"));
         }
         catch (Exception ex)
         {
             Log.W($"[ASUS klavye] {name} hata: {ex.Message}");
-            return new(DeviceKind.Keyboard, name, null, false, "Okunamadı");
+            return new(DeviceKind.Keyboard, name, null, false, L.T("Okunamadı", "Read failed"));
         }
     }
 }
@@ -388,15 +392,15 @@ internal static class Keychron
 
         if (last is null)
             return _dongleFound
-                ? new(DeviceKind.Keyboard, Name, null, false, "Pil paketi bekleniyor")
-                : new(DeviceKind.Keyboard, Name, null, false, "Bulunamadı", Present: false);
+                ? new(DeviceKind.Keyboard, Name, null, false, L.T("Pil paketi bekleniyor", "Waiting for battery packet"))
+                : new(DeviceKind.Keyboard, Name, null, false, L.T("Bulunamadı", "Not found"), Present: false);
 
         var v = last.Value;
         var age = DateTime.Now - v.at;
         bool charging = v.charge == 1;
         if (age.TotalSeconds > 60)
             // Klavye uykuya geçince paket gelmez; son değeri saatiyle göster
-            return new(DeviceKind.Keyboard, Name, v.pct, false, $"Uykuda · son {v.at:HH:mm}");
+            return new(DeviceKind.Keyboard, Name, v.pct, false, L.T("Uykuda · son ", "Asleep · last ") + $"{v.at:HH:mm}");
 
         return Build(v.pct, v.charge, Notes.Wireless);
     }
@@ -480,11 +484,11 @@ internal static class Keychron
                     _wiredLogged = true;
                     Log.W($"[Keychron] kablo modu PID=0x{dev.ProductID:X4}: %{pct}, şarj={charge}, ham={Log.Hex(buf, 10)}");
                 }
-                if (pct is <= 0 or > 100) return new(DeviceKind.Keyboard, Name, null, false, "USB kablo · pil okunamadı");
+                if (pct is <= 0 or > 100) return new(DeviceKind.Keyboard, Name, null, false, Notes.Cable + L.T(" · pil okunamadı", " · battery unreadable"));
                 // Kablodayken yüzde güvenilir değil (şarj voltajı): yüzde yerine priz simgesi göster
                 return new(DeviceKind.Keyboard, Name, null, charge == 1, Notes.Cable, Wired: true);
             }
-            return new(DeviceKind.Keyboard, Name, null, false, "USB kablo · cevap yok (firmware?)");
+            return new(DeviceKind.Keyboard, Name, null, false, Notes.Cable + L.T(" · cevap yok (firmware?)", " · no response (firmware?)"));
         }
         catch (Exception ex)
         {

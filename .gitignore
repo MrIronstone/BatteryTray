@@ -11,6 +11,7 @@ publish/
 batterytray_log.txt
 hs80_log.txt
 keychron_last.txt
+airpods_last.json
 
 # Firmware ikili dosyaları repoda değil, Releases sayfasında dağıtılır
 *.bin
