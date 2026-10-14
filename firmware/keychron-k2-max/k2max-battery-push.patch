@@ -1,0 +1,195 @@
+diff --git a/keyboards/keychron/common/keychron_raw_hid.c b/keyboards/keychron/common/keychron_raw_hid.c
+index b3657af..731c2d5 100644
+--- a/keyboards/keychron/common/keychron_raw_hid.c
++++ b/keyboards/keychron/common/keychron_raw_hid.c
+@@ -18,6 +18,7 @@
+ #include "keychron_common.h"
+ #include "keychron_raw_hid.h"
+ #include "raw_hid.h"
++#include "usb_descriptor.h"
+ #include "version.h"
+ #include "language.h"
+ #ifdef FACTORY_TEST_ENABLE
+@@ -34,6 +35,8 @@
+ #endif
+ #if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
+ #    include "wireless.h"
++#    include "transport.h"
++#    include "battery.h"
+ #    ifdef LK_WIRELESS_ENABLE
+ #        include "lkbt51.h"
+ #    else
+@@ -72,6 +75,9 @@ void get_support_feature(uint8_t *data) {
+         ;
+ 
+     data[2] = (FEATURE_QUICK_START | FEATURE_NKRO) >> 8;
++#    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
++    data[2] |= (FEATURE_BATTERY >> 8);
++#    endif
+ }
+ 
+ #    ifdef ANANLOG_MATRIX
+@@ -128,6 +134,23 @@ void kc_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len) {
+ #    endif
+ }
+ 
++#    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
++/* Proactively push the battery state to the host over the wireless link.
++ * The host only needs to READ the dongle's raw HID interface; this works even
++ * if the host->keyboard (downlink) raw HID path is not bridged by the dongle. */
++void kc_battery_push(void) {
++    uint8_t  data[RAW_EPSIZE] = {0};
++    uint16_t bat_voltage      = battery_get_voltage();
++    data[0]                   = KC_GET_BATTERY;
++    data[1]                   = battery_get_percentage();
++    data[2]                   = bat_voltage & 0xFF;
++    data[3]                   = (bat_voltage >> 8) & 0xFF;
++    data[4]                   = battery_get_charging_state();
++    data[5]                   = get_transport();
++    kc_raw_hid_send(RAW_HID_SRC_WIRELESS, data, RAW_EPSIZE);
++}
++#    endif
++
+ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
+ #    if defined(ANANLOG_MATRIX) && defined(VIA_ENABLE)
+     if (src == RAW_HID_SRC_USB && data[0] == id_get_keyboard_value && data[1] == id_switch_matrix_state) {
+@@ -168,6 +191,17 @@ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
+             data[2] = get_highest_layer(layer_state);
+             break;
+ 
++#    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
++        case KC_GET_BATTERY: {
++            uint16_t bat_voltage = battery_get_voltage();
++            data[1]              = battery_get_percentage();
++            data[2]              = bat_voltage & 0xFF;
++            data[3]              = (bat_voltage >> 8) & 0xFF;
++            data[4]              = battery_get_charging_state();
++            data[5]              = get_transport();
++        } break;
++#    endif
++
+         case KC_MISC_CMD_GROUP:
+             switch (data[1]) {
+                 case MISC_GET_PROTOCOL_VER:
+diff --git a/keyboards/keychron/common/keychron_raw_hid.h b/keyboards/keychron/common/keychron_raw_hid.h
+index e10f659..6ff1d70 100644
+--- a/keyboards/keychron/common/keychron_raw_hid.h
++++ b/keyboards/keychron/common/keychron_raw_hid.h
+@@ -25,6 +25,7 @@ enum {
+     KC_GET_FIRMWARE_VERSION = 0xA1,
+     KC_GET_SUPPORT_FEATURE  = 0xA2,
+     KC_GET_DEFAULT_LAYER    = 0xA3,
++    KC_GET_BATTERY          = 0xA4,
+     KC_MISC_CMD_GROUP       = 0xA7,
+     KC_KEYCHRON_RGB         = 0xA8,
+     KC_ANALOG_MATRIX        = 0xA9,
+@@ -45,6 +46,7 @@ enum {
+     // Byte 1
+     FEATURE_QUICK_START         = 0x01U << 8,
+     FEATURE_NKRO                = 0x01U << 9,
++    FEATURE_BATTERY             = 0x01U << 10,
+ };
+ 
+ enum {
+@@ -86,3 +88,7 @@ enum {
+ };
+ 
+ void kc_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len);
++
++#if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
++void kc_battery_push(void);
++#endif
+diff --git a/keyboards/keychron/common/wireless/battery.c b/keyboards/keychron/common/wireless/battery.c
+index edc99b6..00b962e 100644
+--- a/keyboards/keychron/common/wireless/battery.c
++++ b/keyboards/keychron/common/wireless/battery.c
+@@ -158,6 +158,18 @@ uint8_t battery_get_percentage(void) {
+         return 0;
+ }
+ 
++uint8_t battery_get_charging_state(void) {
++#if defined(BAT_CHARGING_PIN)
++    if (usb_power_connected()) {
++        if (gpio_read_pin(BAT_CHARGING_PIN) == BAT_CHARGING_LEVEL)
++            return BAT_CHARGING;
++        else
++            return BAT_FULL_CHARGED;
++    }
++#endif
++    return BAT_NOT_CHARGING;
++}
++
+ bool battery_is_empty(void) {
+     return bat_empty > BATTERY_EMPTY_COUNT;
+ }
+@@ -196,8 +208,11 @@ void battery_timer_reset(void) {
+ }
+ 
+ void battery_task(void) {
+-    uint32_t t = rtc_timer_elapsed_ms(bat_monitor_timer_buffer);
++    uint32_t t               = rtc_timer_elapsed_ms(bat_monitor_timer_buffer);
++    bool     monitor_voltage = false;
++
+     if ((get_transport() & TRANSPORT_WIRELESS) && (wireless_get_state() == WT_CONNECTED || battery_power_on_sample())) {
++        monitor_voltage = true;
+ #if defined(BAT_CHARGING_PIN)
+         if (usb_power_connected() && t > VOLTAGE_MEASURE_INTERVAL) {
+             if (gpio_read_pin(BAT_CHARGING_PIN) == BAT_CHARGING_LEVEL)
+@@ -206,7 +221,12 @@ void battery_task(void) {
+                 lkbt51_update_bat_state(BAT_FULL_CHARGED);
+         }
+ #endif
++    } else if (get_transport() == TRANSPORT_USB && usb_power_connected()) {
++        /* BatteryTray: Cable modunda da modülden voltaj oku (sadece okuma) */
++        monitor_voltage = true;
++    }
+ 
++    if (monitor_voltage) {
+         if ((battery_power_on_sample()
+ #if defined(LED_MATRIX_ENABLE) || defined(RGB_MATRIX_ENABLE)
+              && !indicator_is_enabled()
+diff --git a/keyboards/keychron/common/wireless/battery.h b/keyboards/keychron/common/wireless/battery.h
+index b2c572e..685be13 100644
+--- a/keyboards/keychron/common/wireless/battery.h
++++ b/keyboards/keychron/common/wireless/battery.h
+@@ -55,6 +55,7 @@ void     battery_calculate_voltage(bool vol_src_bt, uint16_t value);
+ void     battery_set_voltage(uint16_t value);
+ uint16_t battery_get_voltage(void);
+ uint8_t  battery_get_percentage(void);
++uint8_t  battery_get_charging_state(void);
+ bool     battery_is_empty(void);
+ bool     battery_is_critical_low(void);
+ bool     battery_power_on_sample(void);
+diff --git a/keyboards/keychron/k2_max/k2_max.c b/keyboards/keychron/k2_max/k2_max.c
+index 0560847..364af44 100644
+--- a/keyboards/keychron/k2_max/k2_max.c
++++ b/keyboards/keychron/k2_max/k2_max.c
+@@ -15,6 +15,28 @@
+  */
+ 
+ #include "keychron.h"
++#ifdef LK_WIRELESS_ENABLE
++#    include "keychron_raw_hid.h"
++#    include "transport.h"
++#    include "wireless.h"
++
++/* BatteryTray: pil durumunu 2.4 GHz dongle uzerinden birkac saniyede bir
++ * kendiliginden gonder (dongle bilgisayardan klavyeye gelen istekleri
++ * iletmedigi icin "push" modeli). Sadece 2.4 GHz modunda calisir. */
++#    ifndef BATTERY_PUSH_INTERVAL
++#        define BATTERY_PUSH_INTERVAL 5000
++#    endif
++static uint32_t battery_push_timer = 0;
++
++void keychron_task_kb(void) {
++    if (timer_elapsed32(battery_push_timer) > BATTERY_PUSH_INTERVAL) {
++        battery_push_timer = timer_read32();
++        if (get_transport() == TRANSPORT_P2P4 && wireless_get_state() == WT_CONNECTED) {
++            kc_battery_push();
++        }
++    }
++}
++#endif
+ 
+ bool dip_switch_update_kb(uint8_t index, bool active) {
+     if (index == 0) {

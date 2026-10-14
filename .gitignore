@@ -1,0 +1,20 @@
+# Derleme çıktıları
+bin/
+obj/
+out/
+publish/
+*.user
+.vs/
+.vscode/
+
+# Uygulamanın çalışırken yazdığı dosyalar
+batterytray_log.txt
+hs80_log.txt
+keychron_last.txt
+
+# Firmware ikili dosyaları repoda değil, Releases sayfasında dağıtılır
+*.bin
+*.hex
+
+# Release notları (repoya girmez)
+release-notes.md
