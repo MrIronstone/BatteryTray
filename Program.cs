@@ -95,16 +95,22 @@ internal sealed class Hs80Device : IDisposable
         finally { _discovering = false; }
     }
 
+    private int _lastCandidateCount = -1;
+
     private bool EnsureOpenCore()
     {
-
         // Take writable interfaces (out > 0); try the known-good dongle (0x0A97)
         // first and the headset's own USB interface (0x0A96) second.
         var candidates = FindCandidates()
             .Where(d => d.GetMaxOutputReportLength() > 0)
             .OrderBy(d => d.ProductID == 0x0A97 ? 0 : 1)
             .ToList();
-        Log.W($"candidate interfaces: {candidates.Count}");
+        // Logged only when the count changes; while the headset is off this runs every 5 s
+        if (candidates.Count != _lastCandidateCount)
+        {
+            _lastCandidateCount = candidates.Count;
+            Log.W($"candidate interfaces: {candidates.Count}");
+        }
         Found = candidates.Count > 0;
         if (!Found) LastError = L.T("Bulunamadı", "Not found");
 
@@ -112,7 +118,7 @@ internal sealed class Hs80Device : IDisposable
         {
           try
           {
-            Log.W($"deneniyor PID=0x{dev.ProductID:X4} out={dev.GetMaxOutputReportLength()} in={dev.GetMaxInputReportLength()} {dev.DevicePath}");
+            Log.W($"trying PID=0x{dev.ProductID:X4} out={dev.GetMaxOutputReportLength()} in={dev.GetMaxInputReportLength()} {dev.DevicePath}");
             if (!dev.TryOpen(out var s)) { LastError = L.T("arayüz açılamadı", "could not open interface"); Log.W("  could not open"); continue; }
             s.ReadTimeout = 400;
             s.WriteTimeout = 400;
@@ -126,7 +132,7 @@ internal sealed class Hs80Device : IDisposable
             try
             {
                 var ids = dev.GetReportDescriptor().OutputReports.Select(r => r.ReportID).ToList();
-                Log.W("  output report id'leri: " + string.Join(",", ids.Select(i => "0x" + i.ToString("X2"))));
+                Log.W("  output report IDs: " + string.Join(",", ids.Select(i => "0x" + i.ToString("X2"))));
                 _reportId = ids.Count == 0 || ids.Contains(Hs80Protocol.ReportId) ? Hs80Protocol.ReportId : ids[0];
             }
             catch (Exception ex) { Log.W("  could not read descriptor: " + ex.Message); }
@@ -136,7 +142,7 @@ internal sealed class Hs80Device : IDisposable
             foreach (var route in new[] { Hs80Protocol.RouteHeadset, Hs80Protocol.RouteRoot })
             {
                 _route = route;
-                Log.W($"  hedef 0x{route:X2} deneniyor");
+                Log.W($"  trying route 0x{route:X2}");
                 if (route == Hs80Protocol.RouteHeadset) Wake();
                 if (ReadBatteryRaw() is not null) { Log.W("  OK"); LastError = null; return true; }
             }
@@ -145,7 +151,7 @@ internal sealed class Hs80Device : IDisposable
           catch (Exception ex)
           {
             LastError = ex.GetType().Name + ": " + ex.Message;
-            Log.W($"  hata (PID=0x{dev.ProductID:X4}): " + ex);
+            Log.W($"  error (PID=0x{dev.ProductID:X4}): " + ex);
           }
           Close();
         }
@@ -281,6 +287,7 @@ internal sealed class TrayApp : ApplicationContext
     private DeviceStatus _mouse = new(DeviceKind.Mouse, L.T("Fare", "Mouse"), null, false, "...", Present: false);
     private DeviceStatus _keyboard = new(DeviceKind.Keyboard, L.T("Klavye", "Keyboard"), null, false, "...", Present: false);
     private DeviceStatus _asusKeyboard = new(DeviceKind.Keyboard, L.T("ASUS klavye", "ASUS keyboard"), null, false, "...", Present: false);
+    private IReadOnlyList<DeviceStatus> _logitech = Array.Empty<DeviceStatus>();
     private readonly System.Windows.Forms.Timer _timer;
     private Icon? _currentIcon;
     private bool _busy;
@@ -297,6 +304,8 @@ internal sealed class TrayApp : ApplicationContext
         SetIcon("?", Color.Gray);
         _tray.MouseClick += OnTrayClick;
         _popup.NearbyProvider = AirPods.Nearby;
+        // While the panel is open, AirPods values show up within a second of opening the case lid
+        _popup.ItemsProvider = () => { _airpods = AirPods.Current() ?? _airpods; return Items; };
         AirPods.Start();   // scanning always runs for the Nearby tab
 
         // Timer that alternates between the battery icon and the charging device icon
@@ -368,7 +377,7 @@ internal sealed class TrayApp : ApplicationContext
 
     // Low battery alert: one Windows notification per device at 10 % and at 5 %.
     // Alerts reset once the device is put on charge or goes above 15 %.
-    private readonly Dictionary<DeviceKind, int> _warnedAt = new();
+    private readonly Dictionary<string, int> _warnedAt = new();   // keyed by device name
 
     private void CheckLowBattery()
     {
@@ -376,22 +385,22 @@ internal sealed class TrayApp : ApplicationContext
         {
             if (d.Charging || d.Percent is null or >= 15)
             {
-                if (d.Charging || d.Percent >= 15) _warnedAt.Remove(d.Kind);
+                if (d.Charging || d.Percent >= 15) _warnedAt.Remove(d.Name);
                 continue;
             }
 
             int p = d.Percent.Value;
             int level = p < 5 ? 5 : p < 10 ? 10 : 0;
             if (level == 0) continue;
-            if (_warnedAt.TryGetValue(d.Kind, out int prev) && prev <= level) continue;
+            if (_warnedAt.TryGetValue(d.Name, out int prev) && prev <= level) continue;
 
-            _warnedAt[d.Kind] = level;
+            _warnedAt[d.Name] = level;
             Log.W($"low battery alert: {d.Name} {p}%");
             _tray.ShowBalloonTip(10_000,
                 level == 5 ? L.T("Pil kritik seviyede", "Battery critical") : L.T("Pil azaldı", "Battery low"),
-                // AirPods values come in 10 % steps: mark them as approximate
-                L.T($"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}%{p} kaldı. Şarja takmayı unutma.",
-                    $"{d.Name}: {(d.Kind == DeviceKind.Earbuds ? "~" : "")}{p}% left. Don't forget to charge it."),
+                // Approximate readings (AirPods in 10 % steps, Logitech voltage/level) are marked with "~"
+                L.T($"{d.Name}: {(d.Approx || d.Kind == DeviceKind.Earbuds ? "~" : "")}%{p} kaldı. Şarj etmeyi ya da pili değiştirmeyi unutma.",
+                    $"{d.Name}: {(d.Approx || d.Kind == DeviceKind.Earbuds ? "~" : "")}{p}% left. Don't forget to charge it or replace the battery."),
                 level == 5 ? ToolTipIcon.Error : ToolTipIcon.Warning);
         }
     }
@@ -399,7 +408,7 @@ internal sealed class TrayApp : ApplicationContext
     private DeviceStatus? _airpods;   // only listed once its advertisement has been seen
 
     private IReadOnlyList<DeviceStatus> Items =>
-        new[] { _headset, _mouse, _keyboard, _asusKeyboard, _airpods }
+        new[] { _headset, _mouse, _keyboard, _asusKeyboard, _airpods }.Concat(_logitech)
             .Where(d => d is { Present: true })
             .Select(d => d!)
             .ToList();
@@ -426,17 +435,19 @@ internal sealed class TrayApp : ApplicationContext
             var others = Task.Run(() =>
             {
                 DeviceStatus m, k, ak;
+                IReadOnlyList<DeviceStatus> lg;
                 try { m = RogMouse.Read(); } catch (Exception ex) { Log.W("mouse: " + ex); m = _mouse with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
                 try { k = Keychron.Read(); } catch (Exception ex) { Log.W("keyboard: " + ex); k = _keyboard with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
                 try { ak = AsusKeyboard.Read(); } catch (Exception ex) { Log.W("ASUS keyboard: " + ex); ak = _asusKeyboard with { Percent = null, Note = L.T("Okunamadı", "Read failed") }; }
-                return (m, k, ak);
+                try { lg = Logitech.Read(); } catch (Exception ex) { Log.W("Logitech: " + ex); lg = _logitech; }
+                return (m, k, ak, lg);
             });
 
             var info = await Task.Run(() => _device.Read());
             UpdateHeadsetStatus(info);
             UpdateTrayIcon(info);   // update the icon as soon as the headset is read, don't wait for the others
 
-            (_mouse, _keyboard, _asusKeyboard) = await others;
+            (_mouse, _keyboard, _asusKeyboard, _logitech) = await others;
             try { _airpods = await AirPods.ReadAsync(); } catch (Exception ex) { Log.W("airpods: " + ex.Message); }
             CheckLowBattery();
             if (_popup.Visible) _popup.SetItems(Items);

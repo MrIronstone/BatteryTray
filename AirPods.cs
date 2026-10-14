@@ -108,9 +108,9 @@ internal static class AirPods
     // Known model ids (proximity pairing [3..4]). Unknown ones are shown with their code.
     private static string ModelName(string code) => code switch
     {
-        "2002" => "AirPods (1. nesil)",
-        "200F" => "AirPods (2. nesil)",
-        "2013" => "AirPods (3. nesil)",
+        "2002" => "AirPods (1st gen)",
+        "200F" => "AirPods (2nd gen)",
+        "2013" => "AirPods (3rd gen)",
         "2019" or "201B" => "AirPods 4",
         "200E" => "AirPods Pro",
         "2014" or "2024" => "AirPods Pro 2",
@@ -128,7 +128,7 @@ internal static class AirPods
             // Active scanning: devices usually send their name only in the "scan response"
             _watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
             _watcher.Received += OnReceived;
-            _watcher.Stopped += (_, e) => Log.W($"[AirPods] tarama durdu: {e.Error}");
+            _watcher.Stopped += (_, e) => Log.W($"[AirPods] scan stopped: {e.Error}");
             _watcher.Start();
             Log.W("[AirPods] Bluetooth LE scan started");
         }
@@ -221,7 +221,8 @@ internal static class AirPods
             bool nameChanged = _paired?.name != found?.Item1;
             _paired = found;
             if (nameChanged) Save();
-            if (!_pairedLogged || found is null)
+            // Log only the first result and changes, not every minute
+            if (!_pairedLogged || nameChanged)
             {
                 _pairedLogged = true;
                 Log.W(found is null ? "[AirPods] no paired AirPods"
@@ -238,6 +239,13 @@ internal static class AirPods
         // the panel/icon shouldn't wait for it (the row may not appear on the very first round)
         if (_pairedTask is null || _pairedTask.IsCompleted) _pairedTask = Task.Run(RefreshPairedAsync);
         await Task.CompletedTask;
+        return Current();
+    }
+
+    /// Panel row from what the Bluetooth scan has already seen. Cheap: no device queries,
+    /// so the open panel can call it every second (e.g. right after the case lid is opened).
+    public static DeviceStatus? Current()
+    {
         if (_paired is null) return null;
         var (pairedName, connected) = _paired.Value;
 

@@ -23,7 +23,7 @@ internal static class Notes
 /// Present = false: the device isn't on this PC and isn't shown in the panel.
 /// Parts: for devices with more than one battery (AirPods: left, right, case). Drawn as separate columns.
 internal sealed record DeviceStatus(DeviceKind Kind, string Name, int? Percent, bool Charging, string Note,
-    bool Wired = false, bool Present = true, IReadOnlyList<BatteryPart>? Parts = null);
+    bool Wired = false, bool Present = true, IReadOnlyList<BatteryPart>? Parts = null, bool Approx = false);
 
 /// Approx: the value is approximate (AirPods advertise in 10 % steps), shown with "~" in the panel.
 internal sealed record BatteryPart(string Label, int? Percent, bool Charging, bool Approx = false);
@@ -56,20 +56,24 @@ internal static class RogMouse
 
     private static readonly Profile[] Mice =
     {
-        new(0x197F, "ROG Gladius III Wireless"), new(0x197D, "ROG Gladius III (kablo)"),
-        new(0x1A72, "ROG Gladius III AimPoint"), new(0x1A70, "ROG Gladius III AimPoint (kablo)"),
-        new(0x1B0C, "ROG Gladius III EVA-02"), new(0x1B0A, "ROG Gladius III EVA-02 (kablo)"),
+        new(0x197F, "ROG Gladius III Wireless"), new(0x197D, "ROG Gladius III (cable)"),
+        new(0x1A72, "ROG Gladius III AimPoint"), new(0x1A70, "ROG Gladius III AimPoint (cable)"),
+        new(0x1B0C, "ROG Gladius III EVA-02"), new(0x1B0A, "ROG Gladius III EVA-02 (cable)"),
         new(0x1ACE, "ROG Mouse (OMNI Receiver)", "mi_02&col03", 3, 64),
         new(0x1AD0, "ROG Harpe II", "mi_02&col03", 3, 64),
-        new(0x1A1A, "ROG Chakram X"), new(0x1A18, "ROG Chakram X (kablo)"),
-        new(0x1A94, "ROG Harpe Ace Aim Lab"), new(0x1A92, "ROG Harpe Ace Aim Lab (kablo)"),
-        new(0x1A68, "ROG Keris AimPoint"), new(0x1A66, "ROG Keris AimPoint (kablo)"),
-        new(0x1979, "ROG Spatha X"), new(0x1977, "ROG Spatha X (kablo)"),
+        new(0x1A1A, "ROG Chakram X"), new(0x1A18, "ROG Chakram X (cable)"),
+        new(0x1A94, "ROG Harpe Ace Aim Lab"), new(0x1A92, "ROG Harpe Ace Aim Lab (cable)"),
+        new(0x1A68, "ROG Keris AimPoint"), new(0x1A66, "ROG Keris AimPoint (cable)"),
+        new(0x1979, "ROG Spatha X"), new(0x1977, "ROG Spatha X (cable)"),
         new(0x18A0, "ROG Gladius II Wireless", "mi_02", Scale: 25),
-        new(0x1960, "ROG Keris Wireless", Scale: 25), new(0x195E, "ROG Keris (kablo)", Scale: 25),
+        new(0x1960, "ROG Keris Wireless", Scale: 25), new(0x195E, "ROG Keris (cable)", Scale: 25),
     };
 
     private static bool _loggedOnce;
+
+    /// ROG mice also expose a keyboard interface (for macro keys); the keyboard code uses this to skip them
+    /// (the Omni Receiver 0x1ACE is shared by mice and keyboards, so it doesn't count).
+    public static bool IsKnownMouse(int pid) => pid != 0x1ACE && Mice.Any(m => m.Pid == pid);
 
     public static DeviceStatus Read()
     {
@@ -93,15 +97,30 @@ internal static class RogMouse
         }
 
         if (last is not null) return last;
-        return all.Count == 0
+
+        // Only report "Unsupported model" for an ASUS device that really is a mouse:
+        // it has a mouse interface and no keyboard interface (keyboards often expose a mouse collection too).
+        var unknownMouse = all
+            .GroupBy(d => d.ProductID)
+            .FirstOrDefault(g => g.Any(d => HasUsage(d, MouseUsage)) && !g.Any(d => HasUsage(d, KeyboardUsage)));
+        return unknownMouse is null
             ? new(DeviceKind.Mouse, L.T("Fare", "Mouse"), null, false, L.T("Bulunamadı", "Not found"), Present: false)
-            : new(DeviceKind.Mouse, HidNames.Of(all[0], "ASUS fare"), null, false, L.T("Desteklenmeyen model", "Unsupported model"));
+            : new(DeviceKind.Mouse, HidNames.Of(unknownMouse.First(), "ASUS mouse"), null, false, L.T("Desteklenmeyen model", "Unsupported model"));
+    }
+
+    private const uint MouseUsage = 0x00010002;      // Generic Desktop / Mouse
+    private const uint KeyboardUsage = 0x00010006;   // Generic Desktop / Keyboard
+
+    private static bool HasUsage(HidDevice d, uint usage)
+    {
+        try { return d.GetReportDescriptor().DeviceItems.SelectMany(i => i.Usages.GetAllValues()).Contains(usage); }
+        catch { return false; }
     }
 
     private static DeviceStatus Query(HidDevice dev, Profile p)
     {
         string name = HidNames.Of(dev, p.Name);
-        bool cable = p.Name.Contains("(kablo)");
+        bool cable = p.Name.Contains("(cable)");
         try
         {
             var cfg = new OpenConfiguration();
@@ -151,7 +170,7 @@ internal static class RogMouse
         }
         catch (Exception ex)
         {
-            Log.W($"[ROG] {name} hata: {ex.Message}");
+            Log.W($"[ROG] {name} error: {ex.Message}");
             return new(DeviceKind.Mouse, name, null, false, L.T("Okunamadı", "Read failed"));
         }
     }
@@ -163,6 +182,11 @@ internal static class RogMouse
 //  - Interface: "mi_02&col02", vendor usage page 0xFF00, report ID 0x02
 //  - Request (64 bytes): [0x02, 0x12, 0x01, 0...]
 //  - Response: [1]=0x12 [2]=0x01 (echo), [6]=battery %, [9]=charging (1 = charging)
+// ROG Falchion answers the same command on "mi_01" (usage page 0xFF00, report ID 0x00, 65-byte reports)
+// with a different layout: [9]=charging, [11]=battery %, [12..13]=battery voltage in mV (little-endian).
+//   cable    (PID 0x193C): 00-12-01-00-00-00-0A-02-01-01-02-64-D0-10 -> charging, 100 %, 4304 mV
+//   wireless (PID 0x193E): 00-12-01-00-00-00-08-02-01-00-02-50-85-0F -> on battery, 80 %, 3973 mV
+// The layout is told apart by the voltage field: a plausible Li-ion voltage at [12..13] means the Falchion layout.
 // To avoid accidentally sending commands to other ASUS devices (e.g. a motherboard RGB controller),
 // only devices that have both this interface and a keyboard interface are queried.
 // ---------------------------------------------------------------------------
@@ -254,9 +278,9 @@ internal static class AsusKeyboard
                 try { Log.W($"{tag} -> {Log.Hex(s.Read(), 16)}"); got++; }
                 catch (TimeoutException) { }
             }
-            if (got == 0) Log.W($"{tag} -> (cevap yok)");
+            if (got == 0) Log.W($"{tag} -> (no response)");
         }
-        catch (Exception ex) { Log.W($"{tag} -> hata: {ex.Message}"); }
+        catch (Exception ex) { Log.W($"{tag} -> error: {ex.Message}"); }
     }
 
     private static string ShortPath(HidDevice d)
@@ -277,9 +301,11 @@ internal static class AsusKeyboard
         // ASUS devices that have a keyboard interface (by PID)
         var keyboardPids = all.Where(d => HasUsage(d, u => u == KeyboardUsage)).Select(d => d.ProductID).ToHashSet();
 
+        // Vendor (0xFF00) channel with an output report on a device that is also a keyboard
+        // ROG mice have a keyboard interface too (macro keys), so known mouse PIDs are skipped
         var candidates = all.Where(d =>
                 keyboardPids.Contains(d.ProductID) &&
-                d.DevicePath.Contains("mi_02&col02", StringComparison.OrdinalIgnoreCase) &&
+                !RogMouse.IsKnownMouse(d.ProductID) &&
                 d.GetMaxOutputReportLength() > 0 &&
                 HasUsage(d, u => (u >> 16) == 0xFF00))
             .ToList();
@@ -287,7 +313,7 @@ internal static class AsusKeyboard
         if (!_loggedOnce)
         {
             _loggedOnce = true;
-            foreach (var d in candidates) Log.W($"[ASUS klavye] aday PID=0x{d.ProductID:X4} {d.DevicePath}");
+            foreach (var d in candidates) Log.W($"[ASUS keyboard] candidate PID=0x{d.ProductID:X4} {d.DevicePath}");
         }
 
         DeviceStatus? last = null;
@@ -303,7 +329,7 @@ internal static class AsusKeyboard
     private static DeviceStatus Query(HidDevice dev)
     {
         // Prefer the keyboard's own name over the receiver's ("ROG Omni Receiver") when available
-        string name = HidNames.Of(dev, "ASUS klavye");
+        string name = HidNames.Of(dev, "ASUS keyboard");
         try
         {
             var cfg = new OpenConfiguration();
@@ -318,8 +344,17 @@ internal static class AsusKeyboard
                 try { s.Read(); } catch { break; }
             }
 
+            // Report ID from the descriptor: 0x02 on the Omni Receiver, 0x00 on the Falchion
+            byte id = 0x02;
+            try
+            {
+                var ids = dev.GetReportDescriptor().OutputReports.Select(r => r.ReportID).ToList();
+                if (ids.Count > 0 && !ids.Contains(0x02)) id = ids[0];
+            }
+            catch { }
+
             var q = new byte[Math.Max(dev.GetMaxOutputReportLength(), 64)];
-            q[0] = 0x02; q[1] = 0x12; q[2] = 0x01;
+            q[0] = id; q[1] = 0x12; q[2] = 0x01;
             s.ReadTimeout = 300;
             s.WriteTimeout = 500;
 
@@ -331,16 +366,18 @@ internal static class AsusKeyboard
                 {
                     byte[] buf;
                     try { buf = s.Read(); } catch (TimeoutException) { continue; }
-                    if (buf.Length < 10 || buf[0] != 0x02) continue;
+                    if (buf.Length < 10 || buf[0] != id) continue;
                     if (buf[1] == 0xFF && buf[2] == 0xAA)
                         return new(DeviceKind.Keyboard, name, null, false, L.T("Uykuda / kapalı", "Asleep / off"));
                     if (buf[1] != 0x12 || buf[2] != 0x01) continue;
 
-                    int pct = buf[6];
+                    int mv = buf.Length > 13 ? buf[12] | (buf[13] << 8) : 0;
+                    bool falchionLayout = mv is >= 3000 and <= 4500 && buf[11] is > 0 and <= 100;
+                    int pct = falchionLayout ? buf[11] : buf[6];
                     if (pct is <= 0 or > 100) continue;
                     bool charging = buf[9] == 1;
                     // Via a receiver (Omni Receiver / dongle) it's wireless; with the keyboard's own USB ID it's the cable
-                    bool viaReceiver = dev.ProductID == 0x1ACE ||
+                    bool viaReceiver = dev.ProductID is 0x1ACE or 0x193E ||
                         name.Contains("Receiver", StringComparison.OrdinalIgnoreCase) ||
                         name.Contains("Dongle", StringComparison.OrdinalIgnoreCase);
                     return new(DeviceKind.Keyboard, name, pct, charging,
@@ -351,7 +388,7 @@ internal static class AsusKeyboard
         }
         catch (Exception ex)
         {
-            Log.W($"[ASUS klavye] {name} hata: {ex.Message}");
+            Log.W($"[ASUS keyboard] {name} error: {ex.Message}");
             return new(DeviceKind.Keyboard, name, null, false, L.T("Okunamadı", "Read failed"));
         }
     }
@@ -369,7 +406,7 @@ internal static class AsusKeyboard
 internal static class Keychron
 {
     // The name comes from the device: the keyboard's own name on cable, the receiver's name on 2.4 GHz
-    private static volatile string Name = "Klavye";
+    private static volatile string Name = "Keyboard";
     private static Thread? _listener;
     private static volatile bool _dongleFound;
     private static (int pct, int mv, int charge, DateTime at)? _last;
@@ -524,7 +561,7 @@ internal static class Keychron
                 cfg.SetOption(OpenOption.Exclusive, false);
                 using var s = dev.Open(cfg);
                 s.ReadTimeout = 15000;
-                Log.W("[Keychron] raw HID dinleniyor");
+                Log.W("[Keychron] listening on raw HID");
                 bool firstLogged = false;
 
                 while (true)

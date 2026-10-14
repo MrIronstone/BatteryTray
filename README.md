@@ -26,10 +26,11 @@ the devices directly over USB HID and Bluetooth LE.
 | Headset | Corsair HS80 MAX, Virtuoso MAX, Void Wireless V2 | 2.4 GHz receiver or USB cable |
 | Mouse | ASUS ROG wireless mice (Gladius III, Harpe, Keris, Chakram, Spatha …) | Receiver or USB cable |
 | Keyboard | Keychron K2 Max | **Requires patched firmware**, see [`firmware/keychron-k2-max`](firmware/keychron-k2-max) |
-| Keyboard | ASUS ROG wireless keyboards (via Omni Receiver, e.g. Strix Scope II 96 Wireless) | Other ROG keyboards untested |
+| Keyboard | ASUS ROG wireless keyboards: ROG Falchion, and keyboards on the Omni Receiver (e.g. Strix Scope II 96 Wireless) | Receiver or USB cable; other ROG keyboards untested |
 | Earbuds | AirPods, AirPods Pro, Beats | From Bluetooth LE advertisements, 10 % steps |
+| Mouse / keyboard | Logitech wireless devices via Lightspeed / Unifying / Bolt (e.g. G305) | *Experimental.* Devices that only report a voltage or level are shown as approximate (~) |
 
-Brands not listed (Logitech, Razer, SteelSeries, HyperX …) each use their own protocol and
+Brands not listed (Razer, SteelSeries, HyperX …) each use their own protocol and
 won't show up yet. Contributions welcome.
 
 ## Installation
@@ -74,8 +75,9 @@ Protocols were learned from these open-source projects:
 - [battery-tray](https://github.com/mikgangal/battery-tray) — ASUS ROG keyboard (Omni Receiver) battery query
 - [k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware) — Keychron 2.4 GHz battery patch
 - [OpenPods](https://github.com/adolfintel/OpenPods) — AirPods Bluetooth LE advertisement format
+- [Solaar](https://github.com/pwr-Solaar/Solaar) — Logitech HID++ battery features
 
 ## License
 
 [GPL-3.0](LICENSE). The Keychron firmware patch is a QMK derivative and is GPL-2.0-or-later.
-This project is not affiliated with Corsair, ASUS, Keychron, Apple or SteelSeries.
+This project is not affiliated with Corsair, ASUS, Keychron, Logitech, Apple or SteelSeries.

@@ -25,10 +25,11 @@ cihazlarla doğrudan USB HID ve Bluetooth LE üzerinden konuşur.
 | Kulaklık | Corsair HS80 MAX, Virtuoso MAX, Void Wireless V2 | 2.4 GHz alıcı ya da USB kablo |
 | Fare | ASUS ROG kablosuz fareler (Gladius III, Harpe, Keris, Chakram, Spatha …) | Alıcı ya da USB kablo |
 | Klavye | Keychron K2 Max | **Yamalı firmware gerekir**, bkz. [`firmware/keychron-k2-max`](firmware/keychron-k2-max) |
-| Klavye | ASUS ROG kablosuz klavyeler (Omni Receiver ile; ör. Strix Scope II 96 Wireless) | Diğer ROG klavyeler denenmedi |
+| Klavye | ASUS ROG kablosuz klavyeler: ROG Falchion ve Omni Receiver ile bağlanan klavyeler (ör. Strix Scope II 96 Wireless) | Alıcı ya da USB kablo; diğer ROG klavyeler denenmedi |
 | Kulak içi | AirPods, AirPods Pro, Beats | Bluetooth LE yayınından, 10'ar puanlık hassasiyet |
+| Fare / klavye | Lightspeed / Unifying / Bolt alıcılı Logitech cihazlar (ör. G305) | *Deneysel.* Sadece voltaj ya da seviye bildiren cihazlar yaklaşık (~) gösterilir |
 
-Listede olmayan markalar (Logitech, Razer, SteelSeries, HyperX …) her biri farklı bir
+Listede olmayan markalar (Razer, SteelSeries, HyperX …) her biri farklı bir
 protokol kullandığı için şimdilik görünmez. Katkılara açık.
 
 ## Kurulum
@@ -71,8 +72,9 @@ Protokoller bu açık kaynak projelerden öğrenildi:
 - [battery-tray](https://github.com/mikgangal/battery-tray) — ASUS ROG klavye (Omni Receiver) pil sorgusu
 - [k10he-battery-firmware](https://github.com/OutersGIT/k10he-battery-firmware) — Keychron 2.4 GHz pil yaması
 - [OpenPods](https://github.com/adolfintel/OpenPods) — AirPods Bluetooth LE yayın biçimi
+- [Solaar](https://github.com/pwr-Solaar/Solaar) — Logitech HID++ pil özellikleri
 
 ## Lisans
 
 [GPL-3.0](LICENSE). Keychron firmware yaması QMK türevi olduğu için GPL-2.0-or-later.
-Bu proje Corsair, ASUS, Keychron, Apple ya da SteelSeries ile bağlantılı değildir.
+Bu proje Corsair, ASUS, Keychron, Logitech, Apple ya da SteelSeries ile bağlantılı değildir.
